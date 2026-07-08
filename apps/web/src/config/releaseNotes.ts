@@ -46,6 +46,29 @@ export interface ReleaseNote {
 
 export const releaseNotes: ReleaseNote[] = [
   {
+    version: '4.2.0',
+    date: '2026-07-08',
+    title: 'Provider-Neutral Outbound Email',
+    sections: [
+      {
+        heading: 'New Features',
+        items: [
+          'Self-hosted installs can send password reset, verification, invitation, shared bill, and email OTP messages through SMTP',
+          'Outbound email can now be selected with EMAIL_PROVIDER=smtp, resend, or none',
+          'SMTP configuration supports host, port, STARTTLS, SSL, optional authentication, timeout, sender, and app URL settings',
+        ],
+      },
+      {
+        heading: 'Improvements',
+        items: [
+          'Existing Resend configurations continue to work for hosted and current deployments',
+          'Admin UI, Docker Compose, environment examples, and README documentation now describe outbound email instead of Resend-only setup',
+          'Self-hosted documentation clarifies that BillManager does not bundle a production SMTP server and should use a mail provider or existing relay',
+        ],
+      },
+    ],
+  },
+  {
     version: '4.1.1',
     date: '2026-07-08',
     title: 'Self-Hosted OIDC Providers',

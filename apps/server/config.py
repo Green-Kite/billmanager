@@ -8,6 +8,7 @@ Supports two modes:
 
 import os
 import logging
+from services.email_config import get_email_config
 
 logger = logging.getLogger(__name__)
 
@@ -114,8 +115,10 @@ ENABLE_REGISTRATION = (
     == "true"
 )
 
-# Email: enabled when RESEND_API_KEY is configured
-EMAIL_ENABLED = bool(os.environ.get("RESEND_API_KEY"))
+# Email: enabled when any supported outbound provider is fully configured
+EMAIL_CONFIG = get_email_config(os.environ)
+EMAIL_PROVIDER = EMAIL_CONFIG.provider
+EMAIL_ENABLED = EMAIL_CONFIG.is_configured
 
 
 # =============================================================================

@@ -573,7 +573,7 @@ export function UsersTab({ isActive }: UsersTabProps) {
           <Divider my="sm" />
           <Alert icon={<IconMailOff size={16} />} color="gray" variant="light">
             <Text size="sm">
-              Email invitations are not available. Configure RESEND_API_KEY to enable sending invitations.
+              Email invitations are not available. Configure outbound email to enable sending invitations.
             </Text>
           </Alert>
         </>

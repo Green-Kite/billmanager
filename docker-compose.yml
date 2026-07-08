@@ -20,10 +20,22 @@ services:
       # - ENABLE_REGISTRATION=true  # Allow public registration
       # - REQUIRE_EMAIL_VERIFICATION=true  # Require email verification
 
-      # Email settings (optional - for password reset and verification)
-      # - RESEND_API_KEY=re_your_api_key
+      # Email settings (optional - for password reset, verification, invitations, and email OTP)
+      # SMTP is recommended for self-hosted installs. Use your mail provider
+      # or an existing relay; BillManager does not include a production SMTP server.
+      # - EMAIL_PROVIDER=smtp
+      # - SMTP_HOST=smtp.example.com
+      # - SMTP_PORT=587
+      # - SMTP_USERNAME=your-smtp-username
+      # - SMTP_PASSWORD=your-smtp-password
+      # - SMTP_USE_TLS=true
+      # - SMTP_USE_SSL=false
+      # - SMTP_TIMEOUT=10
       # - FROM_EMAIL=noreply@yourdomain.com
       # - APP_URL=https://bills.yourdomain.com
+      # Resend remains supported as an alternative:
+      # - EMAIL_PROVIDER=resend
+      # - RESEND_API_KEY=re_your_api_key
     depends_on:
       - db
     restart: unless-stopped

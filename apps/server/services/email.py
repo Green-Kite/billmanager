@@ -1,8 +1,12 @@
 """
-Email service using Resend for transactional emails.
+Provider-neutral outbound email service for transactional emails.
 """
-import os
 import logging
+import os
+import smtplib
+from email.message import EmailMessage
+
+from services.email_config import get_email_config
 
 logger = logging.getLogger(__name__)
 
@@ -12,47 +16,98 @@ try:
     RESEND_AVAILABLE = True
 except ImportError:
     RESEND_AVAILABLE = False
-    logger.warning("Resend not installed. Email functionality disabled.")
+    logger.warning("Resend not installed. Resend email provider disabled.")
 
 # Configuration from environment
-RESEND_API_KEY = os.environ.get('RESEND_API_KEY')
-FROM_EMAIL = os.environ.get('FROM_EMAIL', 'noreply@billmanager.app')
-APP_URL = os.environ.get('APP_URL', 'http://localhost:5000')
+EMAIL_CONFIG = get_email_config(os.environ)
+EMAIL_PROVIDER = EMAIL_CONFIG.provider
+RESEND_API_KEY = EMAIL_CONFIG.resend_api_key
+FROM_EMAIL = EMAIL_CONFIG.from_email
+APP_URL = EMAIL_CONFIG.app_url
+
 
 def init_resend():
     """Initialize Resend with API key"""
-    if RESEND_AVAILABLE and RESEND_API_KEY:
+    if RESEND_AVAILABLE and EMAIL_CONFIG.provider == "resend" and RESEND_API_KEY:
         resend.api_key = RESEND_API_KEY
         return True
     return False
 
+
 def send_email(to: str, subject: str, html: str) -> bool:
     """
-    Send an email using Resend.
+    Send an email using the configured outbound email provider.
 
     Returns True if sent successfully, False otherwise.
     """
+    if EMAIL_CONFIG.provider == "resend":
+        return _send_resend_email(to, subject, html)
+    if EMAIL_CONFIG.provider == "smtp":
+        return _send_smtp_email(to, subject, html)
+
+    logger.warning(f"Email not sent (email provider disabled): {subject} to {to}")
+    return False
+
+
+def _send_resend_email(to: str, subject: str, html: str) -> bool:
+    """Send an email using Resend."""
     if not RESEND_AVAILABLE:
-        logger.warning(f"Email not sent (resend not available): {subject} to {to}")
+        logger.warning(f"Email not sent (Resend not available): {subject} to {to}")
         return False
 
-    if not RESEND_API_KEY:
-        logger.warning(f"Email not sent (no API key): {subject} to {to}")
+    if not EMAIL_CONFIG.resend_api_key:
+        logger.warning(f"Email not sent (Resend API key missing): {subject} to {to}")
         return False
 
     try:
-        resend.api_key = RESEND_API_KEY
+        resend.api_key = EMAIL_CONFIG.resend_api_key
         params = {
-            "from": FROM_EMAIL,
+            "from": EMAIL_CONFIG.from_email,
             "to": [to],
             "subject": subject,
             "html": html,
         }
         response = resend.Emails.send(params)
-        logger.info(f"Email sent successfully: {subject} to {to}, id={response.get('id')}")
+        email_id = response.get("id") if isinstance(response, dict) else None
+        logger.info(
+            f"Email sent successfully via Resend: {subject} to {to}, id={email_id}"
+        )
         return True
     except Exception as e:
-        logger.error(f"Failed to send email: {subject} to {to}, error={e}")
+        logger.error(f"Failed to send email via Resend: {subject} to {to}, error={e}")
+        return False
+
+
+def _send_smtp_email(to: str, subject: str, html: str) -> bool:
+    """Send an email using SMTP."""
+    smtp_config = EMAIL_CONFIG.smtp
+    if not smtp_config.is_configured:
+        logger.warning(
+            f"Email not sent (SMTP is not fully configured): {subject} to {to}"
+        )
+        return False
+
+    message = EmailMessage()
+    message["From"] = EMAIL_CONFIG.from_email
+    message["To"] = to
+    message["Subject"] = subject
+    message.set_content("This email requires an HTML-capable email client.")
+    message.add_alternative(html, subtype="html")
+
+    smtp_client = smtplib.SMTP_SSL if smtp_config.use_ssl else smtplib.SMTP
+    try:
+        with smtp_client(
+            smtp_config.host, smtp_config.port, timeout=smtp_config.timeout
+        ) as server:
+            if smtp_config.use_tls and not smtp_config.use_ssl:
+                server.starttls()
+            if smtp_config.has_auth:
+                server.login(smtp_config.username, smtp_config.password)
+            server.send_message(message)
+        logger.info(f"Email sent successfully via SMTP: {subject} to {to}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to send email via SMTP: {subject} to {to}, error={e}")
         return False
 
 

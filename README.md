@@ -6,17 +6,17 @@ A **secure multi-user** web application for tracking recurring expenses and inco
 
 ---
 
-## 🎉 What's New in v4.1.1
+## 🎉 What's New in v4.2.0
 
-**Self-Hosted OIDC Providers** - Bring your own Authelia, Authentik, Keycloak, or other OIDC provider for one-click sign-in.
+**Provider-Neutral Outbound Email** - Self-hosters can send BillManager emails through their own SMTP provider or keep using Resend.
 
 ### Highlights
 
-- **Generic OIDC** - Configure a self-hosted identity provider with discovery URL, scopes, and display name
-- **Flexible Token Auth** - Use `client_secret_post`, `client_secret_basic`, `none`, or `auto` for provider-specific token exchanges
-- **Claim Mapping** - Map custom email, username, and display-name claims without code changes
-- **Provider Compatibility** - Userinfo fallback and optional email verification bypass support IdPs that keep ID tokens minimal
-- **Secure Linking** - PKCE, nonce validation, JWKS signature verification, replay protection, and linked-account management
+- **Bring Your Own SMTP** - Configure SMTP host, port, TLS/SSL, credentials, timeout, sender, and app URL with environment variables
+- **Resend Compatibility** - Existing `RESEND_API_KEY` installs continue to work, with explicit `EMAIL_PROVIDER=resend` support
+- **Unified Email Enablement** - Password reset, verification, invitations, shared bill invites, and email OTP now use one provider-neutral send path
+- **Self-Hosted Documentation** - Compose and environment examples now recommend external SMTP providers or relays instead of bundling a production mail server
+- **Test Coverage** - SMTP, Resend, provider selection, helper contracts, and password-reset non-enumeration behavior are covered by focused backend tests
 
 ---
 
@@ -174,9 +174,17 @@ postgresql://USERNAME:PASSWORD@HOST:PORT/DATABASE
 | `DATABASE_URL` | PostgreSQL connection string | `postgresql://billsuser:billspass@db:5432/billsdb` |
 | `FLASK_SECRET_KEY` | Secret key for session encryption | **Required in production** |
 | `JWT_SECRET_KEY` | Secret key for mobile API tokens | Falls back to `FLASK_SECRET_KEY` |
-| `RESEND_API_KEY` | Email provider API key (enables invitations) | None |
+| `EMAIL_PROVIDER` | Outbound email provider: `smtp`, `resend`, or `none` | Auto-detects Resend/SMTP config |
 | `FROM_EMAIL` | Sender email address | None |
 | `APP_URL` | Application URL for email links | `http://localhost:5000` |
+| `SMTP_HOST` | SMTP server hostname for self-hosted email | None |
+| `SMTP_PORT` | SMTP server port | `587` or `465` when SSL is enabled |
+| `SMTP_USERNAME` | SMTP username, optional for unauthenticated relays | None |
+| `SMTP_PASSWORD` | SMTP password, optional for unauthenticated relays | None |
+| `SMTP_USE_TLS` | Use STARTTLS for SMTP connections | `true` unless SSL is enabled |
+| `SMTP_USE_SSL` | Use implicit SSL/TLS for SMTP connections | `false` |
+| `SMTP_TIMEOUT` | SMTP connection timeout in seconds | `10` |
+| `RESEND_API_KEY` | Resend API key for hosted/existing installs | None |
 | `ALLOWED_ORIGINS` | Comma-separated list of allowed CORS origins | Uses `APP_URL` or localhost |
 | `DEPLOYMENT_MODE` | `self-hosted` or `saas` | `self-hosted` |
 | `ENABLE_2FA` | Enable two-factor authentication flows | `false` |
@@ -392,9 +400,41 @@ Docker Compose uses a named volume for PostgreSQL data:
 
 ### Key Technologies
 - **Icons:** Tabler Icons (70+ categories)
-- **Email:** Resend for transactional emails
+- **Email:** Provider-neutral outbound email via SMTP or Resend
 - **Security:** Flask-Limiter, Flask-Talisman, bcrypt password hashing
 - **Validation:** Server-side input validation with RFC-compliant patterns
+
+### Outbound Email
+
+BillManager can send password reset, verification, invitation, shared bill, and
+email OTP messages through either SMTP or Resend. SMTP is the recommended
+self-hosted path because it works with common mail providers and existing
+homelab relays:
+
+```env
+EMAIL_PROVIDER=smtp
+SMTP_HOST=smtp.example.com
+SMTP_PORT=587
+SMTP_USERNAME=your-smtp-username
+SMTP_PASSWORD=your-smtp-password
+SMTP_USE_TLS=true
+SMTP_USE_SSL=false
+FROM_EMAIL=noreply@yourdomain.com
+APP_URL=https://bills.yourdomain.com
+```
+
+Resend remains supported for hosted or existing installs:
+
+```env
+EMAIL_PROVIDER=resend
+RESEND_API_KEY=re_your_api_key
+FROM_EMAIL=noreply@yourdomain.com
+```
+
+BillManager does not bundle a production SMTP server. Operating one safely
+requires DNS, SPF/DKIM/DMARC, abuse prevention, deliverability monitoring, and
+network port considerations that are separate from the application stack. Use a
+mail provider, transactional email service, or a relay you already operate.
 
 ---
 
