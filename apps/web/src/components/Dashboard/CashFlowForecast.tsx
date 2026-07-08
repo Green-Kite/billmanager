@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
+import '@mantine/charts/styles.css';
 import {
   Alert,
   Badge,
@@ -30,6 +31,8 @@ import { BillIcon } from '../BillIcon';
 
 interface CashFlowForecastProps {
   hasDatabase: boolean;
+  framed?: boolean;
+  showHeader?: boolean;
 }
 
 const STORAGE_KEY = 'billmanager:forecast-starting-balance';
@@ -79,7 +82,7 @@ function SummaryMetric({
   );
 }
 
-export function CashFlowForecast({ hasDatabase }: CashFlowForecastProps) {
+export function CashFlowForecast({ hasDatabase, framed = true, showHeader = true }: CashFlowForecastProps) {
   const [startingBalance, setStartingBalance] = useState<number>(() => {
     const saved = window.localStorage.getItem(STORAGE_KEY);
     const parsed = saved ? Number(saved) : 0;
@@ -135,16 +138,17 @@ export function CashFlowForecast({ hasDatabase }: CashFlowForecastProps) {
 
   if (!hasDatabase) return null;
 
-  return (
-    <Paper withBorder p="md" radius="md">
+  const content = (
       <Stack gap="md">
-        <Group justify="space-between" align="flex-start">
-          <Stack gap={2}>
-            <Title order={4}>Cash Flow Forecast</Title>
-            <Text size="sm" c="dimmed">
-              Projected balance from upcoming bills, deposits, and shared payables
-            </Text>
-          </Stack>
+        <Group justify={showHeader ? 'space-between' : 'flex-end'} align={showHeader ? 'flex-start' : 'flex-end'}>
+          {showHeader && (
+            <Stack gap={2}>
+              <Title order={4}>Cash Flow Forecast</Title>
+              <Text size="sm" c="dimmed">
+                Projected balance from upcoming bills, deposits, and shared payables
+              </Text>
+            </Stack>
+          )}
           <Group gap="sm" align="flex-end">
             <NumberInput
               label="Starting balance"
@@ -278,6 +282,15 @@ export function CashFlowForecast({ hasDatabase }: CashFlowForecastProps) {
           </>
         ) : null}
       </Stack>
+  );
+
+  if (!framed) {
+    return content;
+  }
+
+  return (
+    <Paper withBorder p="md" radius="md">
+      {content}
     </Paper>
   );
 }

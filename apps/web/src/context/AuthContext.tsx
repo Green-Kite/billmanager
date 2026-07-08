@@ -1,13 +1,14 @@
 import { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import type { ReactNode } from 'react';
 import * as api from '../api/client';
-import type { Database, TwoFARequiredResponse, LoginResponse } from '../api/client';
+import type { Database, TwoFARequiredResponse, LoginResponse, User } from '../api/client';
 import { TokenStorage } from '../utils/tokenStorage';
 
 interface AuthState {
   isLoggedIn: boolean;
   isAdmin: boolean;
   role: 'admin' | 'user' | null;
+  user: User | null;
   databases: Database[];
   currentDb: string | null;
   isLoading: boolean;
@@ -54,6 +55,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     isLoggedIn: false,
     isAdmin: false,
     role: null,
+    user: null,
     databases: [],
     currentDb: null,
     isLoading: true,
@@ -66,6 +68,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       isLoggedIn: false,
       isAdmin: false,
       role: null,
+      user: null,
       databases: [],
       currentDb: null,
       isLoading: false,
@@ -99,6 +102,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         // Use is_account_owner from API (true for account owners who can access admin/billing)
         isAdmin: response.user.is_account_owner ?? response.user.role === 'admin',
         role: response.user.role,
+        user: response.user,
         databases: response.databases,
         currentDb: currentDb || response.databases[0]?.name || null,
         isLoading: false,
@@ -157,6 +161,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         isLoggedIn: true,
         isAdmin: loginResp.user.is_account_owner ?? loginResp.user.role === 'admin',
         role: loginResp.user.role,
+        user: loginResp.user,
         databases: loginResp.databases || [],
         currentDb: currentDb || loginResp.databases?.[0]?.name || null,
         isLoading: false,
@@ -180,6 +185,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         isLoggedIn: true,
         isAdmin: response.user.is_account_owner ?? response.user.role === 'admin',
         role: response.user.role,
+        user: response.user,
         databases: response.databases || [],
         currentDb: currentDb || response.databases?.[0]?.name || null,
         isLoading: false,
@@ -225,6 +231,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         isLoggedIn: true,
         isAdmin: response.user.role === 'admin',
         role: response.user.role,
+        user: response.user,
         databases: response.databases || [],
         currentDb: currentDb || response.databases?.[0]?.name || null,
         isLoading: false,
@@ -279,6 +286,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         isLoggedIn: false,
         isAdmin: false,
         role: null,
+        user: null,
         databases: [],
         currentDb: null,
         isLoading: false,

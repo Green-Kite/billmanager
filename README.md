@@ -6,15 +6,17 @@ A **secure multi-user** web application for tracking recurring expenses and inco
 
 ---
 
-## 🎉 What's New in v4.2.1
+## 🎉 What's New in v4.2.2
 
-**Dark Mode Reminder Alert Readability** - Dashboard reminder alerts now keep bill names readable in night mode.
+**Analytics Workspace and Performance Update** - Analytics now owns planning views, alert handling is less intrusive, and the web app ships smaller initial bundles.
 
 ### Highlights
 
-- **Theme-Aware Alert Cards** - Reminder alert bill names no longer disappear on white cards while dark mode is active
-- **Consistent Overdue Alerts** - Overdue bill alert cards use the same dark-mode-safe surface treatment
-- **Patch Release Metadata** - Web, API, OpenAPI, and release notes now report v4.2.1
+- **Customizable Analytics** - Analytics sections can be collapsed, reordered, and saved per user
+- **Stacked Category Charts** - Category spending now appears in stacked bar and area charts instead of budget cards
+- **Floating Reminder Alerts** - Active reminders use a floating bell indicator with a slide-out alert drawer
+- **Smaller Initial Bundle** - Routes, modals, charts, and export libraries are split into lazy chunks
+- **Runtime Refresh** - Mantine, Recharts, Python dependencies, PostgreSQL defaults, and the production Python runtime were updated
 
 ---
 
@@ -90,7 +92,7 @@ make test-db-down
          - db
 
      db:
-       image: postgres:16-alpine
+       image: postgres:17-alpine
        container_name: bills-db
        restart: unless-stopped
        environment:
@@ -103,6 +105,11 @@ make test-db-down
    volumes:
      postgres_data:
    ```
+
+   New installs use PostgreSQL 17 by default. If you already have data in a
+   PostgreSQL 16 Docker volume, do not point the existing volume at the 17 image
+   directly; take a backup and restore into a fresh PostgreSQL 17 volume or run a
+   proper `pg_upgrade` flow.
 
 2. **Run the application**:
    ```bash

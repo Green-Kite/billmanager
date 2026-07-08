@@ -1,42 +1,216 @@
-import { useEffect, useState, useMemo } from 'react';
-import { Stack, Title, Paper, Center, Text, Grid, Group, SimpleGrid, ThemeIcon, Alert, Loader, SegmentedControl, Divider, Button, NumberInput, Autocomplete, Select, Table, Progress, ActionIcon, Badge } from '@mantine/core';
-import { BarChart, LineChart } from '@mantine/charts';
-import { notifications } from '@mantine/notifications';
-import { IconChartPie, IconTrendingUp, IconTrendingDown, IconAlertCircle, IconPlus, IconEdit, IconTrash, IconCheck, IconX } from '@tabler/icons-react';
+import { useEffect, useMemo, useState } from 'react';
+import type { DragEvent, ReactNode } from 'react';
+import '@mantine/charts/styles.css';
+import {
+  ActionIcon,
+  Alert,
+  Box,
+  Center,
+  Collapse,
+  Divider,
+  Grid,
+  Group,
+  Loader,
+  Paper,
+  SegmentedControl,
+  SimpleGrid,
+  Stack,
+  Text,
+  ThemeIcon,
+  Title,
+} from '@mantine/core';
+import { AreaChart, BarChart } from '@mantine/charts';
+import {
+  IconAlertCircle,
+  IconChartPie,
+  IconChevronDown,
+  IconChevronUp,
+  IconGripVertical,
+  IconTrendingDown,
+  IconTrendingUp,
+} from '@tabler/icons-react';
 import { AccountPieChart } from '../components/Analytics/AccountPieChart';
 import { YoYComparison } from '../components/Analytics/YoYComparison';
-import { getStatsByAccount, getStatsYearly, getMonthlyComparison, getMonthlyPayments, getBudgetSummary, getCategories, createBudget, updateBudget, deleteBudget } from '../api/client';
-import type { AccountStats, YearlyStats, MonthlyComparison as MonthlyComparisonType, BudgetSummaryItem, Database } from '../api/client';
+import { CashFlowForecast } from '../components/Dashboard/CashFlowForecast';
+import { useAuth } from '../context/AuthContext';
+import { getAllPayments, getMonthlyComparison, getStatsByAccount, getStatsYearly } from '../api/client';
+import type { AccountStats, MonthlyComparison as MonthlyComparisonType, PaymentWithBill, YearlyStats } from '../api/client';
 
 interface AnalyticsProps {
   hasDatabase: boolean;
   currentDb?: string | null;
-  databases?: Database[];
 }
 
-interface ChartData {
+interface CategoryChartData {
   month: string;
   label: string;
   total: number;
+  [key: string]: string | number;
 }
 
-export function Analytics({ hasDatabase, currentDb, databases = [] }: AnalyticsProps) {
+interface CategorySeries {
+  name: string;
+  label: string;
+  color: string;
+}
+
+type SectionId = 'summary' | 'spending-trends' | 'cash-flow' | 'accounts' | 'yearly';
+
+interface AnalyticsLayout {
+  order: SectionId[];
+  collapsed: SectionId[];
+}
+
+interface AnalyticsSection {
+  id: SectionId;
+  title: string;
+  description?: string;
+  content: ReactNode;
+}
+
+const DEFAULT_SECTION_ORDER: SectionId[] = ['summary', 'spending-trends', 'cash-flow', 'accounts', 'yearly'];
+
+const CATEGORY_COLORS = [
+  'violet.6',
+  'blue.6',
+  'teal.6',
+  'green.6',
+  'yellow.6',
+  'orange.6',
+  'red.6',
+  'pink.6',
+  'grape.6',
+  'cyan.6',
+  'indigo.6',
+  'lime.6',
+];
+
+function normalizeLayout(value: Partial<AnalyticsLayout> | null | undefined): AnalyticsLayout {
+  const providedOrder = Array.isArray(value?.order) ? value.order : [];
+  const order = [
+    ...providedOrder.filter((id): id is SectionId => DEFAULT_SECTION_ORDER.includes(id as SectionId)),
+    ...DEFAULT_SECTION_ORDER.filter((id) => !providedOrder.includes(id)),
+  ];
+  const collapsed = Array.isArray(value?.collapsed)
+    ? value.collapsed.filter((id): id is SectionId => DEFAULT_SECTION_ORDER.includes(id as SectionId))
+    : [];
+
+  return { order, collapsed };
+}
+
+function formatCurrency(value: number): string {
+  return value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function monthKey(date: Date): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function paymentMonthKey(paymentDate: string): string | null {
+  const match = /^(\d{4})-(\d{2})/.exec(paymentDate);
+  return match ? `${match[1]}-${match[2]}` : null;
+}
+
+function categoryLabel(payment: PaymentWithBill): string {
+  return payment.category?.trim() || 'Uncategorized';
+}
+
+function SectionShell({
+  section,
+  collapsed,
+  isDragging,
+  onToggle,
+  onDragStart,
+  onDragOver,
+  onDrop,
+  onDragEnd,
+}: {
+  section: AnalyticsSection;
+  collapsed: boolean;
+  isDragging: boolean;
+  onToggle: () => void;
+  onDragStart: (event: DragEvent<HTMLDivElement>) => void;
+  onDragOver: (event: DragEvent<HTMLDivElement>) => void;
+  onDrop: (event: DragEvent<HTMLDivElement>) => void;
+  onDragEnd: () => void;
+}) {
+  return (
+    <Paper
+      withBorder
+      p="md"
+      radius="md"
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+      opacity={isDragging ? 0.65 : 1}
+      style={{ transition: 'opacity 120ms ease, border-color 120ms ease' }}
+    >
+      <Group justify="space-between" align="flex-start" mb={collapsed ? 0 : 'md'}>
+        <Group
+          gap="sm"
+          wrap="nowrap"
+          draggable
+          onDragStart={onDragStart}
+          onDragEnd={onDragEnd}
+          style={{ cursor: 'grab', flex: 1, minWidth: 0 }}
+        >
+          <ActionIcon variant="subtle" color="gray" aria-label={`Move ${section.title}`}>
+            <IconGripVertical size={18} />
+          </ActionIcon>
+          <Stack gap={2} style={{ minWidth: 0 }}>
+            <Title order={5}>{section.title}</Title>
+            {section.description && (
+              <Text size="sm" c="dimmed">
+                {section.description}
+              </Text>
+            )}
+          </Stack>
+        </Group>
+        <ActionIcon
+          variant="subtle"
+          color="gray"
+          onClick={onToggle}
+          aria-label={`${collapsed ? 'Expand' : 'Collapse'} ${section.title}`}
+        >
+          {collapsed ? <IconChevronDown size={18} /> : <IconChevronUp size={18} />}
+        </ActionIcon>
+      </Group>
+
+      <Collapse expanded={!collapsed}>{section.content}</Collapse>
+    </Paper>
+  );
+}
+
+export function Analytics({ hasDatabase, currentDb }: AnalyticsProps) {
+  const { user } = useAuth();
   const [accountStats, setAccountStats] = useState<AccountStats[]>([]);
   const [yearlyStats, setYearlyStats] = useState<YearlyStats | null>(null);
   const [monthlyComparison, setMonthlyComparison] = useState<MonthlyComparisonType | null>(null);
-  const [monthlyPayments, setMonthlyPayments] = useState<Record<string, { deposits: number; expenses: number }>>({});
-  const [budgetSummary, setBudgetSummary] = useState<BudgetSummaryItem[]>([]);
-  const [categories, setCategories] = useState<string[]>([]);
+  const [payments, setPayments] = useState<PaymentWithBill[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [chartType, setChartType] = useState<string>('bar');
   const [monthRange, setMonthRange] = useState<string>('12');
-  const [editingBudgetId, setEditingBudgetId] = useState<number | null>(null);
-  const [budgetCategory, setBudgetCategory] = useState('');
-  const [budgetLimit, setBudgetLimit] = useState<number | string>('');
-  const [budgetDatabaseId, setBudgetDatabaseId] = useState<number | null>(null);
+  const [draggingSectionId, setDraggingSectionId] = useState<SectionId | null>(null);
+  const [layout, setLayout] = useState<AnalyticsLayout>(() => normalizeLayout(null));
 
-  const isAllBucketsMode = currentDb === '_all_';
+  const storageKey = useMemo(() => {
+    const userKey = user?.id ?? 'anonymous';
+    const dbKey = currentDb ?? 'none';
+    return `billmanager:analytics-layout:${userKey}:${dbKey}`;
+  }, [currentDb, user?.id]);
+
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem(storageKey);
+      setLayout(normalizeLayout(saved ? JSON.parse(saved) : null));
+    } catch {
+      setLayout(normalizeLayout(null));
+    }
+  }, [storageKey]);
+
+  useEffect(() => {
+    window.localStorage.setItem(storageKey, JSON.stringify(layout));
+  }, [layout, storageKey]);
 
   useEffect(() => {
     if (hasDatabase) {
@@ -49,21 +223,17 @@ export function Analytics({ hasDatabase, currentDb, databases = [] }: AnalyticsP
     setError(null);
 
     try {
-      const [accounts, yearly, comparison, payments, budgets, categoryOptions] = await Promise.all([
+      const [accounts, yearly, comparison, allPayments] = await Promise.all([
         getStatsByAccount().catch(() => []),
         getStatsYearly().catch(() => ({})),
         getMonthlyComparison().catch(() => null),
-        getMonthlyPayments().catch(() => ({})),
-        getBudgetSummary().catch(() => []),
-        getCategories().catch(() => []),
+        getAllPayments().catch(() => []),
       ]);
 
       setAccountStats(accounts);
       setYearlyStats(yearly);
       setMonthlyComparison(comparison);
-      setMonthlyPayments(payments ?? {});
-      setBudgetSummary(budgets ?? []);
-      setCategories(categoryOptions ?? []);
+      setPayments(Array.isArray(allPayments) ? allPayments : []);
     } catch (err) {
       setError('Failed to load analytics data');
       console.error(err);
@@ -72,126 +242,129 @@ export function Analytics({ hasDatabase, currentDb, databases = [] }: AnalyticsP
     }
   };
 
-  // Build spending trends chart data
-  const trendData = useMemo((): ChartData[] => {
-    const months: ChartData[] = [];
+  const trend = useMemo(() => {
     const now = new Date();
+    const rows: CategoryChartData[] = [];
+    const rowByMonth = new Map<string, CategoryChartData>();
+    const categoryTotals = new Map<string, number>();
 
     for (let i = 11; i >= 0; i--) {
       const date = new Date(now.getFullYear(), now.getMonth() - i, 1);
-      const year = date.getFullYear();
-      const month = String(date.getMonth() + 1).padStart(2, '0');
-      const key = `${year}-${month}`;
-      const label = date.toLocaleDateString('en-US', { month: 'short', year: '2-digit' });
-
-      const monthData = monthlyPayments[key];
-      const total = monthData ? monthData.expenses : 0;
-
-      months.push({ month: key, label, total });
-    }
-
-    return months;
-  }, [monthlyPayments]);
-
-  const displayData = monthRange === '6' ? trendData.slice(-6) : trendData;
-  const totalSpent = displayData.reduce((sum, d) => sum + d.total, 0);
-  const monthsWithData = displayData.filter(d => d.total > 0);
-  const avgMonthly = monthsWithData.length > 0 ? totalSpent / monthsWithData.length : 0;
-  const maxMonth = displayData.reduce((max, d) => d.total > max.total ? d : max, { total: 0, label: 'N/A' } as ChartData);
-  const minMonth = monthsWithData.length > 0
-    ? monthsWithData.reduce((min, d) => d.total < min.total ? d : min, { total: Infinity, label: 'N/A' } as ChartData)
-    : { total: 0, label: 'N/A' } as ChartData;
-
-  const resetBudgetForm = () => {
-    setEditingBudgetId(null);
-    setBudgetCategory('');
-    setBudgetLimit('');
-    setBudgetDatabaseId(null);
-  };
-
-  const handleBudgetSubmit = async () => {
-    const category = budgetCategory.trim();
-    const parsedBudgetLimit = typeof budgetLimit === 'number'
-      ? budgetLimit
-      : Number(String(budgetLimit).replace(/[$,]/g, '').trim());
-
-    if (!category || budgetLimit === '' || !Number.isFinite(parsedBudgetLimit)) {
-      notifications.show({
-        title: 'Budget incomplete',
-        message: 'Choose a category and monthly budget amount.',
-        color: 'red',
-      });
-      return;
-    }
-
-    if (isAllBucketsMode && !budgetDatabaseId) {
-      notifications.show({
-        title: 'Bucket required',
-        message: 'Choose which bucket this budget belongs to.',
-        color: 'red',
-      });
-      return;
-    }
-
-    try {
-      const payload = {
-        category,
-        monthly_limit: parsedBudgetLimit,
-        ...(budgetDatabaseId ? { database_id: budgetDatabaseId } : {}),
+      const key = monthKey(date);
+      const row: CategoryChartData = {
+        month: key,
+        label: date.toLocaleDateString('en-US', { month: 'short', year: '2-digit' }),
+        total: 0,
       };
+      rows.push(row);
+      rowByMonth.set(key, row);
+    }
 
-      if (editingBudgetId) {
-        await updateBudget(editingBudgetId, payload);
-        notifications.show({ message: 'Budget updated', color: 'green' });
-      } else {
-        await createBudget(payload);
-        notifications.show({ message: 'Budget added', color: 'green' });
+    payments.forEach((payment) => {
+      if (payment.bill_type === 'deposit' || payment.is_received_payment) {
+        return;
       }
 
-      resetBudgetForm();
-      await loadData();
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Unable to save budget';
-      notifications.show({ title: 'Budget save failed', message, color: 'red' });
-    }
-  };
+      const key = paymentMonthKey(payment.payment_date);
+      const row = key ? rowByMonth.get(key) : null;
+      if (!row) {
+        return;
+      }
 
-  const handleEditBudget = (item: BudgetSummaryItem) => {
-    setEditingBudgetId(item.budget_id);
-    setBudgetCategory(item.category);
-    setBudgetLimit(item.monthly_limit ?? '');
-    setBudgetDatabaseId(item.database_id);
-  };
+      const category = categoryLabel(payment);
+      const amount = Number(payment.amount) || 0;
+      row.total += amount;
+      categoryTotals.set(category, (categoryTotals.get(category) ?? 0) + amount);
+    });
 
-  const handleDeleteBudget = async (budgetId: number) => {
-    if (!window.confirm('Delete this category budget? Spending history will be preserved.')) {
+    const categories = [...categoryTotals.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([category]) => category);
+
+    const series: CategorySeries[] = categories.map((category, index) => {
+      const key = `category_${index}`;
+      rows.forEach((row) => {
+        row[key] = 0;
+      });
+      return {
+        name: key,
+        label: category,
+        color: CATEGORY_COLORS[index % CATEGORY_COLORS.length],
+      };
+    });
+
+    const keyByCategory = new Map(categories.map((category, index) => [category, `category_${index}`]));
+
+    payments.forEach((payment) => {
+      if (payment.bill_type === 'deposit' || payment.is_received_payment) {
+        return;
+      }
+
+      const key = paymentMonthKey(payment.payment_date);
+      const row = key ? rowByMonth.get(key) : null;
+      if (!row) {
+        return;
+      }
+
+      const categoryKey = keyByCategory.get(categoryLabel(payment));
+      if (!categoryKey) {
+        return;
+      }
+
+      row[categoryKey] = Number(row[categoryKey] ?? 0) + (Number(payment.amount) || 0);
+    });
+
+    return { rows, series };
+  }, [payments]);
+
+  const displayData = monthRange === '6' ? trend.rows.slice(-6) : trend.rows;
+  const totalSpent = displayData.reduce((sum, item) => sum + item.total, 0);
+  const monthsWithData = displayData.filter((item) => item.total > 0);
+  const avgMonthly = monthsWithData.length > 0 ? totalSpent / monthsWithData.length : 0;
+  const maxMonth = displayData.reduce(
+    (max, item) => (item.total > max.total ? item : max),
+    { total: 0, label: 'N/A' } as CategoryChartData
+  );
+  const minMonth = monthsWithData.length > 0
+    ? monthsWithData.reduce(
+        (min, item) => (item.total < min.total ? item : min),
+        { total: Infinity, label: 'N/A' } as CategoryChartData
+      )
+    : ({ total: 0, label: 'N/A' } as CategoryChartData);
+
+  const yearlyEntries = yearlyStats ? Object.entries(yearlyStats).sort((a, b) => b[0].localeCompare(a[0])) : [];
+  const currentYearData = yearlyEntries[0];
+  const lastYearData = yearlyEntries[1];
+  const currentYearTotal = currentYearData ? currentYearData[1].expenses : 0;
+  const lastYearTotal = lastYearData ? lastYearData[1].expenses : 0;
+  const yoyChange = lastYearTotal > 0 ? ((currentYearTotal - lastYearTotal) / lastYearTotal) * 100 : 0;
+
+  const moveSection = (targetId: SectionId) => {
+    if (!draggingSectionId || draggingSectionId === targetId) {
       return;
     }
 
-    try {
-      await deleteBudget(budgetId);
-      notifications.show({ message: 'Budget deleted', color: 'green' });
-      if (editingBudgetId === budgetId) {
-        resetBudgetForm();
+    setLayout((current) => {
+      const nextOrder = [...current.order];
+      const fromIndex = nextOrder.indexOf(draggingSectionId);
+      const toIndex = nextOrder.indexOf(targetId);
+      if (fromIndex === -1 || toIndex === -1) {
+        return current;
       }
-      await loadData();
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Unable to delete budget';
-      notifications.show({ title: 'Delete failed', message, color: 'red' });
-    }
+      const [moved] = nextOrder.splice(fromIndex, 1);
+      nextOrder.splice(toIndex, 0, moved);
+      return { ...current, order: nextOrder };
+    });
   };
 
-  const getBudgetProgressColor = (item: BudgetSummaryItem) => {
-    if (item.monthly_limit === null) return 'gray';
-    if (item.over_budget) return 'red';
-    if ((item.percent_used ?? 0) >= 80) return 'yellow';
-    return 'green';
+  const toggleCollapsed = (id: SectionId) => {
+    setLayout((current) => ({
+      ...current,
+      collapsed: current.collapsed.includes(id)
+        ? current.collapsed.filter((item) => item !== id)
+        : [...current.collapsed, id],
+    }));
   };
-
-  const budgetedRows = budgetSummary.filter((item) => item.monthly_limit !== null);
-  const totalBudgetLimit = budgetedRows.reduce((sum, item) => sum + (item.monthly_limit ?? 0), 0);
-  const totalBudgetSpent = budgetedRows.reduce((sum, item) => sum + item.spent, 0);
-  const overBudgetCount = budgetedRows.filter((item) => item.over_budget).length;
 
   if (!hasDatabase) {
     return (
@@ -217,246 +390,100 @@ export function Analytics({ hasDatabase, currentDb, databases = [] }: AnalyticsP
     );
   }
 
-  // Calculate yearly summary
-  const yearlyEntries = yearlyStats ? Object.entries(yearlyStats).sort((a, b) => b[0].localeCompare(a[0])) : [];
-  const currentYearData = yearlyEntries[0];
-  const lastYearData = yearlyEntries[1];
-
-  const currentYearTotal = currentYearData ? currentYearData[1].expenses : 0;
-  const lastYearTotal = lastYearData ? lastYearData[1].expenses : 0;
-  const yoyChange = lastYearTotal > 0 ? ((currentYearTotal - lastYearTotal) / lastYearTotal) * 100 : 0;
-
-  return (
-    <Stack gap="lg">
-      {/* Header */}
-      <Group justify="space-between" align="center">
-        <Title order={2}>Analytics</Title>
-      </Group>
-
-      {error && (
-        <Alert icon={<IconAlertCircle size={16} />} color="red">
-          {error}
-        </Alert>
-      )}
-
-      {/* Summary Cards */}
-      <SimpleGrid cols={{ base: 1, sm: 3 }}>
-        {currentYearData && (
-          <Paper withBorder p="md" radius="md">
-            <Group justify="space-between">
-              <div>
-                <Text size="xs" c="dimmed" tt="uppercase" fw={700}>
-                  {currentYearData[0]} Expenses
-                </Text>
-                <Text fw={700} size="xl">
-                  ${currentYearData[1].expenses.toLocaleString('en-US', { minimumFractionDigits: 2 })}
-                </Text>
-              </div>
-              <ThemeIcon color="blue" variant="light" size="lg" radius="md">
-                <IconChartPie size={20} />
-              </ThemeIcon>
-            </Group>
-          </Paper>
-        )}
-
-        {lastYearData && (
-          <Paper withBorder p="md" radius="md">
-            <Group justify="space-between">
-              <div>
-                <Text size="xs" c="dimmed" tt="uppercase" fw={700}>
-                  {lastYearData[0]} Expenses
-                </Text>
-                <Text fw={700} size="xl">
-                  ${lastYearData[1].expenses.toLocaleString('en-US', { minimumFractionDigits: 2 })}
-                </Text>
-              </div>
-              <ThemeIcon color="gray" variant="light" size="lg" radius="md">
-                <IconChartPie size={20} />
-              </ThemeIcon>
-            </Group>
-          </Paper>
-        )}
-
-        {lastYearTotal > 0 && (
-          <Paper withBorder p="md" radius="md">
-            <Group justify="space-between">
-              <div>
-                <Text size="xs" c="dimmed" tt="uppercase" fw={700}>
-                  Year-over-Year Change
-                </Text>
-                <Text fw={700} size="xl" c={yoyChange >= 0 ? 'red' : 'green'}>
-                  {yoyChange >= 0 ? '+' : ''}{yoyChange.toFixed(1)}%
-                </Text>
-              </div>
-              <ThemeIcon color={yoyChange >= 0 ? 'red' : 'green'} variant="light" size="lg" radius="md">
-                {yoyChange >= 0 ? <IconTrendingUp size={20} /> : <IconTrendingDown size={20} />}
-              </ThemeIcon>
-            </Group>
-          </Paper>
-        )}
-      </SimpleGrid>
-
-      <Paper withBorder p="md" radius="md">
-        <Group justify="space-between" mb="md">
-          <div>
-            <Title order={5}>Category Budgets</Title>
-            <Text size="sm" c="dimmed">
-              Track this month's spending against reusable monthly category limits.
-            </Text>
-          </div>
-          <Group gap="xs">
-            <Badge variant="light" color={overBudgetCount > 0 ? 'red' : 'green'}>
-              {overBudgetCount} over budget
-            </Badge>
-            <Badge variant="light" color="blue">
-              ${totalBudgetSpent.toFixed(2)} / ${totalBudgetLimit.toFixed(2)}
-            </Badge>
-          </Group>
-        </Group>
-
-        <SimpleGrid cols={{ base: 1, md: isAllBucketsMode ? 4 : 3 }} spacing="sm" mb="md">
-          <Autocomplete
-            label="Category"
-            placeholder="Utilities, Housing, Subscriptions..."
-            data={categories}
-            value={budgetCategory}
-            onChange={setBudgetCategory}
-          />
-          <NumberInput
-            label="Monthly budget"
-            placeholder="0.00"
-            prefix="$"
-            decimalScale={2}
-            fixedDecimalScale
-            min={0}
-            value={budgetLimit}
-            onChange={(value) => setBudgetLimit(value ?? '')}
-          />
-          {isAllBucketsMode && (
-            <Select
-              label="Bucket"
-              placeholder="Choose bucket"
-              data={databases.filter((database) => database.id).map((database) => ({
-                value: String(database.id),
-                label: database.display_name,
-              }))}
-              value={budgetDatabaseId ? String(budgetDatabaseId) : null}
-              onChange={(value) => setBudgetDatabaseId(value ? Number(value) : null)}
-            />
-          )}
-          <Group align="flex-end" gap="xs">
-            <Button
-              leftSection={editingBudgetId ? <IconCheck size={16} /> : <IconPlus size={16} />}
-              onClick={handleBudgetSubmit}
-              fullWidth
-            >
-              {editingBudgetId ? 'Update Budget' : 'Add Budget'}
-            </Button>
-            {editingBudgetId && (
-              <ActionIcon variant="subtle" color="gray" size="lg" onClick={resetBudgetForm}>
-                <IconX size={18} />
-              </ActionIcon>
-            )}
-          </Group>
-        </SimpleGrid>
-
-        {budgetSummary.length === 0 ? (
-          <Paper withBorder p="md" radius="sm" bg="var(--mantine-color-default)">
-            <Text size="sm" c="dimmed">
-              No category spending yet. Add categories to bills and record payments to see budget progress here.
-            </Text>
-          </Paper>
-        ) : (
-          <Table striped highlightOnHover>
-            <Table.Thead>
-              <Table.Tr>
-                <Table.Th>Category</Table.Th>
-                <Table.Th>Budget</Table.Th>
-                <Table.Th>Spent</Table.Th>
-                <Table.Th>Remaining</Table.Th>
-                <Table.Th>Usage</Table.Th>
-                <Table.Th>Actions</Table.Th>
-              </Table.Tr>
-            </Table.Thead>
-            <Table.Tbody>
-              {budgetSummary.map((item) => (
-                <Table.Tr key={`${item.database_id}-${item.category}-${item.budget_id ?? 'unbudgeted'}`}>
-                  <Table.Td>
-                    <Text fw={600}>{item.category}</Text>
-                    {isAllBucketsMode && (
-                      <Text size="xs" c="dimmed">
-                        {item.database_name}
-                      </Text>
-                    )}
-                  </Table.Td>
-                  <Table.Td>
-                    {item.monthly_limit === null ? (
-                      <Badge color="gray" variant="light">Unbudgeted</Badge>
-                    ) : (
-                      <Text fw={500}>${item.monthly_limit.toFixed(2)}</Text>
-                    )}
-                  </Table.Td>
-                  <Table.Td>
-                    <Text c={item.spent > 0 ? 'red' : 'dimmed'}>${item.spent.toFixed(2)}</Text>
-                  </Table.Td>
-                  <Table.Td>
-                    {item.remaining === null ? (
-                      <Text c="dimmed">-</Text>
-                    ) : (
-                      <Text c={item.remaining < 0 ? 'red' : 'green'}>
-                        {item.remaining < 0 ? '-' : ''}${Math.abs(item.remaining).toFixed(2)}
-                      </Text>
-                    )}
-                  </Table.Td>
-                  <Table.Td>
-                    {item.percent_used === null ? (
-                      <Progress value={0} color="gray" />
-                    ) : (
-                      <Progress
-                        value={Math.min(item.percent_used, 100)}
-                        color={getBudgetProgressColor(item)}
-                      />
-                    )}
-                    {item.percent_used !== null && (
-                      <Text size="xs" c="dimmed" mt={2}>
-                        {item.percent_used.toFixed(0)}%
-                      </Text>
-                    )}
-                  </Table.Td>
-                  <Table.Td>
-                    <Group gap="xs">
-                      <ActionIcon
-                        variant="subtle"
-                        color="blue"
-                        onClick={() => handleEditBudget(item)}
-                        title={item.budget_id ? 'Edit budget' : 'Set budget'}
-                      >
-                        <IconEdit size={16} />
-                      </ActionIcon>
-                      {item.budget_id && (
-                        <ActionIcon
-                          variant="subtle"
-                          color="red"
-                          onClick={() => handleDeleteBudget(item.budget_id!)}
-                          title="Delete budget"
-                        >
-                          <IconTrash size={16} />
-                        </ActionIcon>
-                      )}
-                    </Group>
-                  </Table.Td>
-                </Table.Tr>
-              ))}
-            </Table.Tbody>
-          </Table>
-        )}
+  const chartTooltip = ({ payload }: { payload?: readonly { payload?: CategoryChartData }[] }) => {
+    if (!payload || payload.length === 0) return null;
+    const item = payload[0]?.payload;
+    if (!item) return null;
+    return (
+      <Paper px="md" py="sm" withBorder shadow="md" radius="md">
+        <Text fw={600}>{item.label}</Text>
+        <Text size="sm" c="dimmed" mb="xs">
+          ${formatCurrency(item.total)}
+        </Text>
+        <Stack gap={3}>
+          {trend.series
+            .map((series) => ({ ...series, value: Number(item[series.name] ?? 0) }))
+            .filter((series) => series.value > 0)
+            .map((series) => (
+              <Group key={series.name} gap="xs" justify="space-between" wrap="nowrap">
+                <Text size="xs">{series.label}</Text>
+                <Text size="xs" fw={600}>${formatCurrency(series.value)}</Text>
+              </Group>
+            ))}
+        </Stack>
       </Paper>
+    );
+  };
 
-      {/* Spending Trends */}
-      {totalSpent > 0 && (
-        <Paper withBorder p="md" radius="md">
-          <Group justify="space-between" mb="md">
-            <Title order={5}>Spending Trends</Title>
+  const sections: AnalyticsSection[] = [
+    {
+      id: 'summary',
+      title: 'Summary',
+      content: (
+        <SimpleGrid cols={{ base: 1, sm: 3 }}>
+          {currentYearData && (
+            <Paper withBorder p="md" radius="md">
+              <Group justify="space-between">
+                <div>
+                  <Text size="xs" c="dimmed" tt="uppercase" fw={700}>
+                    {currentYearData[0]} Expenses
+                  </Text>
+                  <Text fw={700} size="xl">
+                    ${formatCurrency(currentYearData[1].expenses)}
+                  </Text>
+                </div>
+                <ThemeIcon color="blue" variant="light" size="lg" radius="md">
+                  <IconChartPie size={20} />
+                </ThemeIcon>
+              </Group>
+            </Paper>
+          )}
+
+          {lastYearData && (
+            <Paper withBorder p="md" radius="md">
+              <Group justify="space-between">
+                <div>
+                  <Text size="xs" c="dimmed" tt="uppercase" fw={700}>
+                    {lastYearData[0]} Expenses
+                  </Text>
+                  <Text fw={700} size="xl">
+                    ${formatCurrency(lastYearData[1].expenses)}
+                  </Text>
+                </div>
+                <ThemeIcon color="gray" variant="light" size="lg" radius="md">
+                  <IconChartPie size={20} />
+                </ThemeIcon>
+              </Group>
+            </Paper>
+          )}
+
+          {lastYearTotal > 0 && (
+            <Paper withBorder p="md" radius="md">
+              <Group justify="space-between">
+                <div>
+                  <Text size="xs" c="dimmed" tt="uppercase" fw={700}>
+                    Year-over-Year Change
+                  </Text>
+                  <Text fw={700} size="xl" c={yoyChange >= 0 ? 'red' : 'green'}>
+                    {yoyChange >= 0 ? '+' : ''}{yoyChange.toFixed(1)}%
+                  </Text>
+                </div>
+                <ThemeIcon color={yoyChange >= 0 ? 'red' : 'green'} variant="light" size="lg" radius="md">
+                  {yoyChange >= 0 ? <IconTrendingUp size={20} /> : <IconTrendingDown size={20} />}
+                </ThemeIcon>
+              </Group>
+            </Paper>
+          )}
+        </SimpleGrid>
+      ),
+    },
+    {
+      id: 'spending-trends',
+      title: 'Spending Trends',
+      description: 'Monthly expenses split by bill category.',
+      content: totalSpent > 0 ? (
+        <Stack gap="md">
+          <Group justify="space-between">
             <Group gap="sm">
               <SegmentedControl
                 size="xs"
@@ -479,23 +506,23 @@ export function Analytics({ hasDatabase, currentDb, databases = [] }: AnalyticsP
             </Group>
           </Group>
 
-          <SimpleGrid cols={{ base: 2, sm: 4 }} spacing="sm" mb="md">
+          <SimpleGrid cols={{ base: 2, sm: 4 }} spacing="sm">
             <Paper p="sm" withBorder>
               <Text size="xs" c="dimmed">Total Spent</Text>
-              <Text size="lg" fw={700} c="violet">${totalSpent.toFixed(2)}</Text>
+              <Text size="lg" fw={700} c="violet">${formatCurrency(totalSpent)}</Text>
             </Paper>
             <Paper p="sm" withBorder>
               <Text size="xs" c="dimmed">Monthly Avg</Text>
-              <Text size="lg" fw={700} c="blue">${avgMonthly.toFixed(2)}</Text>
+              <Text size="lg" fw={700} c="blue">${formatCurrency(avgMonthly)}</Text>
             </Paper>
             <Paper p="sm" withBorder>
               <Text size="xs" c="dimmed">Highest</Text>
-              <Text size="lg" fw={700} c="red">${maxMonth.total.toFixed(2)}</Text>
+              <Text size="lg" fw={700} c="red">${formatCurrency(maxMonth.total)}</Text>
               <Text size="xs" c="dimmed">{maxMonth.label}</Text>
             </Paper>
             <Paper p="sm" withBorder>
               <Text size="xs" c="dimmed">Lowest</Text>
-              <Text size="lg" fw={700} c="green">${minMonth.total === Infinity ? '0.00' : minMonth.total.toFixed(2)}</Text>
+              <Text size="lg" fw={700} c="green">${formatCurrency(minMonth.total === Infinity ? 0 : minMonth.total)}</Text>
               <Text size="xs" c="dimmed">{minMonth.total === Infinity ? 'N/A' : minMonth.label}</Text>
             </Paper>
           </SimpleGrid>
@@ -505,97 +532,147 @@ export function Analytics({ hasDatabase, currentDb, databases = [] }: AnalyticsP
               h={300}
               data={displayData}
               dataKey="label"
-              series={[{ name: 'total', color: 'violet.6', label: 'Total Paid' }]}
+              series={trend.series}
+              type="stacked"
+              withLegend
               withTooltip
-              tooltipProps={{
-                content: ({ payload }) => {
-                  if (!payload || payload.length === 0) return null;
-                  const item = payload[0].payload as ChartData;
-                  return (
-                    <Paper px="md" py="sm" withBorder shadow="md" radius="md">
-                      <Text fw={500}>{item.label}</Text>
-                      <Text c="dimmed" size="sm">${item.total.toFixed(2)}</Text>
-                    </Paper>
-                  );
-                },
-              }}
+              tooltipProps={{ content: chartTooltip }}
               yAxisProps={{
                 tickFormatter: (value: number) => `$${value}`,
               }}
             />
           ) : (
-            <LineChart
+            <AreaChart
               h={300}
               data={displayData}
               dataKey="label"
-              series={[{ name: 'total', color: 'violet.6', label: 'Total Paid' }]}
+              series={trend.series}
+              type="stacked"
               curveType="monotone"
-              connectNulls
+              fillOpacity={0.28}
+              withDots={false}
+              withLegend
               withTooltip
-              tooltipProps={{
-                content: ({ payload }) => {
-                  if (!payload || payload.length === 0) return null;
-                  const item = payload[0].payload as ChartData;
-                  return (
-                    <Paper px="md" py="sm" withBorder shadow="md" radius="md">
-                      <Text fw={500}>{item.label}</Text>
-                      <Text c="dimmed" size="sm">${item.total.toFixed(2)}</Text>
-                    </Paper>
-                  );
-                },
-              }}
+              tooltipProps={{ content: chartTooltip }}
               yAxisProps={{
                 tickFormatter: (value: number) => `$${value}`,
               }}
             />
           )}
+        </Stack>
+      ) : (
+        <Paper withBorder p="md" radius="sm" bg="var(--mantine-color-default)">
+          <Text size="sm" c="dimmed">
+            No categorized payment history yet. Add categories to bills and record payments to see stacked trends.
+          </Text>
         </Paper>
+      ),
+    },
+    {
+      id: 'cash-flow',
+      title: 'Cash Flow Forecast',
+      description: 'Projected balance from upcoming bills, deposits, and shared payables.',
+      content: <CashFlowForecast hasDatabase={hasDatabase} framed={false} showHeader={false} />,
+    },
+    {
+      id: 'accounts',
+      title: 'Account Breakdown',
+      content: (
+        <Grid>
+          <Grid.Col span={{ base: 12, lg: 6 }}>
+            <AccountPieChart data={accountStats} loading={loading} />
+          </Grid.Col>
+          <Grid.Col span={{ base: 12, lg: 6 }}>
+            <YoYComparison data={monthlyComparison} loading={loading} />
+          </Grid.Col>
+        </Grid>
+      ),
+    },
+    {
+      id: 'yearly',
+      title: 'Yearly Summary',
+      content: yearlyEntries.length > 0 ? (
+        <SimpleGrid cols={{ base: 2, sm: 4, md: 6 }}>
+          {yearlyEntries.map(([year, data]) => {
+            const net = data.deposits - data.expenses;
+            return (
+              <Paper key={year} withBorder p="sm" radius="sm" bg="var(--mantine-color-default)">
+                <Text size="sm" fw={700} mb={4}>{year}</Text>
+                <Divider mb={4} />
+                <Group justify="space-between" gap={4}>
+                  <Text size="xs" c="dimmed">Expenses</Text>
+                  <Text size="sm" fw={600} c="red">-${formatCurrency(data.expenses)}</Text>
+                </Group>
+                {data.deposits > 0 && (
+                  <Group justify="space-between" gap={4}>
+                    <Text size="xs" c="dimmed">Deposits</Text>
+                    <Text size="sm" fw={600} c="green">+${formatCurrency(data.deposits)}</Text>
+                  </Group>
+                )}
+                <Divider my={4} />
+                <Group justify="space-between" gap={4}>
+                  <Text size="xs" fw={600}>Net</Text>
+                  <Text size="sm" fw={700} c={net >= 0 ? 'green' : 'red'}>
+                    {net >= 0 ? '+' : '-'}${formatCurrency(Math.abs(net))}
+                  </Text>
+                </Group>
+              </Paper>
+            );
+          })}
+        </SimpleGrid>
+      ) : (
+        <Text size="sm" c="dimmed">No yearly payment data available yet.</Text>
+      ),
+    },
+  ];
+
+  const sectionById = new Map(sections.map((section) => [section.id, section]));
+
+  return (
+    <Stack gap="lg">
+      <Group justify="space-between" align="center">
+        <Title order={2}>Analytics</Title>
+      </Group>
+
+      {error && (
+        <Alert icon={<IconAlertCircle size={16} />} color="red">
+          {error}
+        </Alert>
       )}
 
-      {/* Charts */}
-      <Grid>
-        <Grid.Col span={{ base: 12, lg: 6 }}>
-          <AccountPieChart data={accountStats} loading={loading} />
-        </Grid.Col>
-        <Grid.Col span={{ base: 12, lg: 6 }}>
-          <YoYComparison data={monthlyComparison} loading={loading} />
-        </Grid.Col>
-      </Grid>
+      <Box>
+        <Stack gap="md">
+          {layout.order.map((id) => {
+            const section = sectionById.get(id);
+            if (!section) {
+              return null;
+            }
 
-      {/* Yearly Breakdown */}
-      {yearlyEntries.length > 0 && (
-        <Paper withBorder p="md" radius="md">
-          <Title order={5} mb="md">Yearly Summary</Title>
-          <SimpleGrid cols={{ base: 2, sm: 4, md: 6 }}>
-            {yearlyEntries.map(([year, data]) => {
-              const net = data.deposits - data.expenses;
-              return (
-                <Paper key={year} withBorder p="sm" radius="sm" bg="var(--mantine-color-default)">
-                  <Text size="sm" fw={700} mb={4}>{year}</Text>
-                  <Divider mb={4} />
-                  <Group justify="space-between" gap={4}>
-                    <Text size="xs" c="dimmed">Expenses</Text>
-                    <Text size="sm" fw={600} c="red">-${data.expenses.toLocaleString('en-US', { minimumFractionDigits: 2 })}</Text>
-                  </Group>
-                  {data.deposits > 0 && (
-                    <Group justify="space-between" gap={4}>
-                      <Text size="xs" c="dimmed">Deposits</Text>
-                      <Text size="sm" fw={600} c="green">+${data.deposits.toLocaleString('en-US', { minimumFractionDigits: 2 })}</Text>
-                    </Group>
-                  )}
-                  <Divider my={4} />
-                  <Group justify="space-between" gap={4}>
-                    <Text size="xs" fw={600}>Net</Text>
-                    <Text size="sm" fw={700} c={net >= 0 ? 'green' : 'red'}>
-                      {net >= 0 ? '+' : '-'}${Math.abs(net).toLocaleString('en-US', { minimumFractionDigits: 2 })}
-                    </Text>
-                  </Group>
-                </Paper>
-              );
-            })}
-          </SimpleGrid>
-        </Paper>
-      )}
+            return (
+              <SectionShell
+                key={section.id}
+                section={section}
+                collapsed={layout.collapsed.includes(section.id)}
+                isDragging={draggingSectionId === section.id}
+                onToggle={() => toggleCollapsed(section.id)}
+                onDragStart={(event) => {
+                  event.dataTransfer.effectAllowed = 'move';
+                  setDraggingSectionId(section.id);
+                }}
+                onDragOver={(event) => {
+                  event.preventDefault();
+                  event.dataTransfer.dropEffect = 'move';
+                }}
+                onDrop={(event) => {
+                  event.preventDefault();
+                  moveSection(section.id);
+                }}
+                onDragEnd={() => setDraggingSectionId(null)}
+              />
+            );
+          })}
+        </Stack>
+      </Box>
     </Stack>
   );
 }

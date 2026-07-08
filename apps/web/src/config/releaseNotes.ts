@@ -46,6 +46,29 @@ export interface ReleaseNote {
 
 export const releaseNotes: ReleaseNote[] = [
   {
+    version: '4.2.2',
+    date: '2026-07-08',
+    title: 'Analytics Workspace and Performance Update',
+    sections: [
+      {
+        heading: 'New Features',
+        items: [
+          'Analytics sections can now be collapsed and reordered with a per-user saved layout',
+          'Cash Flow Forecast moved into Analytics alongside the other planning views',
+          'Reminder alerts now appear as a floating bell indicator and open in a side drawer',
+        ],
+      },
+      {
+        heading: 'Improvements',
+        items: [
+          'Category spending is now visualized as stacked bar and area charts instead of category budget cards',
+          'The web bundle is split by route, modal, and vendor area to remove the large bundle warning and reduce the initial app chunk',
+          'Mantine, Recharts, Python dependencies, PostgreSQL defaults, and the production Python runtime were updated',
+        ],
+      },
+    ],
+  },
+  {
     version: '4.2.1',
     date: '2026-07-08',
     title: 'Dark Mode Reminder Alert Readability',

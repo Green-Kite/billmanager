@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
+import '@mantine/charts/styles.css';
 import {
   Stack,
   Title,
@@ -408,7 +409,7 @@ export function AllPayments() {
               {chartOpened ? 'Hide' : 'Show'}
             </Button>
           </Group>
-          <Collapse in={chartOpened}>
+          <Collapse expanded={chartOpened}>
             <BarChart
               h={200}
               data={monthlyChartData}

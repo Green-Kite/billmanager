@@ -21,7 +21,6 @@ export function VerifyEmail() {
 
   useEffect(() => {
     if (!token) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       setStatus('error');
       setMessage('Invalid verification link. No token provided.');
       return;

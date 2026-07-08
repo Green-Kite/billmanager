@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { lazy, Suspense, useState, useEffect, useCallback, useMemo } from 'react';
+import type { ReactNode } from 'react';
 import { Stack, Loader, Center, Divider, Text, Anchor } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import { notifications } from '@mantine/notifications';
@@ -6,35 +7,37 @@ import { Routes, Route, useNavigate, useLocation, Navigate } from 'react-router-
 import { Layout } from './components/Layout';
 import { Sidebar } from './components/Sidebar';
 import { BillList } from './components/BillList';
-import { BillModal } from './components/BillModal';
 import { PayModal } from './components/PayModal';
-import { PaymentHistory } from './components/PaymentHistory';
 import { Calendar } from './components/Calendar';
-import { PasswordChangeModal } from './components/PasswordChangeModal';
-import { AdminModal } from './components/AdminPanel/AdminModal';
-import { TelemetryNoticeModal } from './components/TelemetryNoticeModal';
-import { ReleaseNotesModal } from './components/ReleaseNotesModal';
+import { ReminderAlertsWidget } from './components/ReminderAlertsWidget';
 import { currentVersion, hasUnseenReleaseNotes } from './config/releaseNotes';
-import { AllPayments } from './pages/AllPayments';
 import { Login } from './pages/Login';
-import { VerifyEmail } from './pages/VerifyEmail';
-import { ForgotPassword } from './pages/ForgotPassword';
-import { ResetPassword } from './pages/ResetPassword';
-import { ResendVerification } from './pages/ResendVerification';
-import { AcceptInvite } from './pages/AcceptInvite';
-import { AcceptShareInvite } from './pages/AcceptShareInvite';
-import { AuthCallback } from './pages/AuthCallback';
-import { Billing } from './pages/Billing';
 import { Dashboard } from './pages/Dashboard';
-import { CalendarPage } from './pages/CalendarPage';
-import { Analytics } from './pages/Analytics';
-import { Settlements } from './pages/Settlements';
-import { Settings } from './pages/Settings';
 import { useAuth } from './context/AuthContext';
 import { useConfig } from './context/ConfigContext';
 import * as api from './api/client';
 import type { Bill } from './api/client';
 import { archiveBill, unarchiveBill, deleteBillPermanent, ApiError } from './api/client';
+
+const AllPayments = lazy(() => import('./pages/AllPayments').then((module) => ({ default: module.AllPayments })));
+const VerifyEmail = lazy(() => import('./pages/VerifyEmail').then((module) => ({ default: module.VerifyEmail })));
+const ForgotPassword = lazy(() => import('./pages/ForgotPassword').then((module) => ({ default: module.ForgotPassword })));
+const ResetPassword = lazy(() => import('./pages/ResetPassword').then((module) => ({ default: module.ResetPassword })));
+const ResendVerification = lazy(() => import('./pages/ResendVerification').then((module) => ({ default: module.ResendVerification })));
+const AcceptInvite = lazy(() => import('./pages/AcceptInvite').then((module) => ({ default: module.AcceptInvite })));
+const AcceptShareInvite = lazy(() => import('./pages/AcceptShareInvite').then((module) => ({ default: module.AcceptShareInvite })));
+const AuthCallback = lazy(() => import('./pages/AuthCallback').then((module) => ({ default: module.AuthCallback })));
+const Billing = lazy(() => import('./pages/Billing').then((module) => ({ default: module.Billing })));
+const CalendarPage = lazy(() => import('./pages/CalendarPage').then((module) => ({ default: module.CalendarPage })));
+const Analytics = lazy(() => import('./pages/Analytics').then((module) => ({ default: module.Analytics })));
+const Settlements = lazy(() => import('./pages/Settlements').then((module) => ({ default: module.Settlements })));
+const Settings = lazy(() => import('./pages/Settings').then((module) => ({ default: module.Settings })));
+const BillModal = lazy(() => import('./components/BillModal').then((module) => ({ default: module.BillModal })));
+const PaymentHistory = lazy(() => import('./components/PaymentHistory').then((module) => ({ default: module.PaymentHistory })));
+const PasswordChangeModal = lazy(() => import('./components/PasswordChangeModal').then((module) => ({ default: module.PasswordChangeModal })));
+const AdminModal = lazy(() => import('./components/AdminPanel/AdminModal').then((module) => ({ default: module.AdminModal })));
+const TelemetryNoticeModal = lazy(() => import('./components/TelemetryNoticeModal').then((module) => ({ default: module.TelemetryNoticeModal })));
+const ReleaseNotesModal = lazy(() => import('./components/ReleaseNotesModal').then((module) => ({ default: module.ReleaseNotesModal })));
 
 // Helper to show error notifications
 function showError(title: string, error: unknown) {
@@ -54,6 +57,18 @@ function showSuccess(message: string) {
     color: 'green',
     autoClose: 3000,
   });
+}
+
+function LoadingFallback() {
+  return (
+    <Center py="xl">
+      <Loader />
+    </Center>
+  );
+}
+
+function LazyRoute({ children }: { children: ReactNode }) {
+  return <Suspense fallback={<LoadingFallback />}>{children}</Suspense>;
 }
 
 // Filter types
@@ -382,19 +397,23 @@ function App() {
         <Routes>
           <Route path="/login" element={<Login />} />
           <Route path="/register" element={<Login />} />
-          <Route path="/verify-email" element={<VerifyEmail />} />
-          <Route path="/forgot-password" element={<ForgotPassword />} />
-          <Route path="/reset-password" element={<ResetPassword />} />
-          <Route path="/resend-verification" element={<ResendVerification />} />
-          <Route path="/accept-invite" element={<AcceptInvite />} />
-          <Route path="/accept-share-invite" element={<AcceptShareInvite />} />
-          <Route path="/auth/callback" element={<AuthCallback />} />
+          <Route path="/verify-email" element={<LazyRoute><VerifyEmail /></LazyRoute>} />
+          <Route path="/forgot-password" element={<LazyRoute><ForgotPassword /></LazyRoute>} />
+          <Route path="/reset-password" element={<LazyRoute><ResetPassword /></LazyRoute>} />
+          <Route path="/resend-verification" element={<LazyRoute><ResendVerification /></LazyRoute>} />
+          <Route path="/accept-invite" element={<LazyRoute><AcceptInvite /></LazyRoute>} />
+          <Route path="/accept-share-invite" element={<LazyRoute><AcceptShareInvite /></LazyRoute>} />
+          <Route path="/auth/callback" element={<LazyRoute><AuthCallback /></LazyRoute>} />
         </Routes>
         {/* Password change modal must be accessible from login page */}
-        <PasswordChangeModal
-          opened={passwordChangeOpened}
-          onClose={() => {}}
-        />
+        {passwordChangeOpened && (
+          <Suspense fallback={null}>
+            <PasswordChangeModal
+              opened={passwordChangeOpened}
+              onClose={() => {}}
+            />
+          </Suspense>
+        )}
       </>
     );
   }
@@ -507,54 +526,68 @@ function App() {
               )
             }
           />
-          <Route path="/all-payments" element={<AllPayments />} />
+          <Route path="/all-payments" element={<LazyRoute><AllPayments /></LazyRoute>} />
           <Route
             path="/calendar"
             element={
-              <CalendarPage
-                bills={bills}
-                onAddBill={handleAddBill}
-                onPayBill={handlePayBill}
-                onEditBill={handleEditBill}
-                hasDatabase={!!currentDb}
-              />
+              <LazyRoute>
+                <CalendarPage
+                  bills={bills}
+                  onAddBill={handleAddBill}
+                  onPayBill={handlePayBill}
+                  onEditBill={handleEditBill}
+                  hasDatabase={!!currentDb}
+                />
+              </LazyRoute>
             }
           />
           <Route
             path="/analytics"
-            element={<Analytics hasDatabase={!!currentDb} currentDb={currentDb} databases={databases} />}
+            element={<LazyRoute><Analytics hasDatabase={!!currentDb} currentDb={currentDb} /></LazyRoute>}
           />
-          <Route path="/settlements" element={<Settlements hasDatabase={!!currentDb} />} />
-          <Route path="/settings" element={<Settings />} />
+          <Route path="/settlements" element={<LazyRoute><Settlements hasDatabase={!!currentDb} /></LazyRoute>} />
+          <Route path="/settings" element={<LazyRoute><Settings /></LazyRoute>} />
           {billingEnabled && (
             <>
-              <Route path="/billing" element={<Billing />} />
-              <Route path="/billing/success" element={<Billing />} />
-              <Route path="/billing/cancel" element={<Billing />} />
+              <Route path="/billing" element={<LazyRoute><Billing /></LazyRoute>} />
+              <Route path="/billing/success" element={<LazyRoute><Billing /></LazyRoute>} />
+              <Route path="/billing/cancel" element={<LazyRoute><Billing /></LazyRoute>} />
             </>
           )}
         </Routes>
       </Layout>
 
+      <ReminderAlertsWidget
+        bills={bills}
+        hasDatabase={!!currentDb}
+        onPayBill={handlePayBill}
+      />
+
       {/* Modals */}
-      <PasswordChangeModal
-        opened={passwordChangeOpened}
-        onClose={() => {}}
-      />
+      <Suspense fallback={null}>
+        {passwordChangeOpened && (
+          <PasswordChangeModal
+            opened={passwordChangeOpened}
+            onClose={() => {}}
+          />
+        )}
 
-      <AdminModal opened={adminOpened} onClose={closeAdmin} />
+        {adminOpened && <AdminModal opened={adminOpened} onClose={closeAdmin} />}
 
-      <BillModal
-        opened={billModalOpened}
-        onClose={closeBillModal}
-        onSave={handleSaveBill}
-        onArchive={handleArchiveBill}
-        onUnarchive={handleUnarchiveBill}
-        onDelete={handleDeleteBill}
-        bill={currentBill}
-        isAllBucketsMode={currentDb === '_all_'}
-        databases={databases}
-      />
+        {billModalOpened && (
+          <BillModal
+            opened={billModalOpened}
+            onClose={closeBillModal}
+            onSave={handleSaveBill}
+            onArchive={handleArchiveBill}
+            onUnarchive={handleUnarchiveBill}
+            onDelete={handleDeleteBill}
+            bill={currentBill}
+            isAllBucketsMode={currentDb === '_all_'}
+            databases={databases}
+          />
+        )}
+      </Suspense>
 
       <PayModal
         opened={payModalOpened}
@@ -563,19 +596,27 @@ function App() {
         bill={currentBill}
       />
 
-      <PaymentHistory
-        opened={historyOpened}
-        onClose={closeHistory}
-        billId={historyBillId}
-        billName={historyBillName}
-        isShared={historyBillIsShared}
-        shareInfo={historyBillShareInfo}
-        onPaymentsChanged={fetchBills}
-      />
+      <Suspense fallback={null}>
+        {historyOpened && (
+          <PaymentHistory
+            opened={historyOpened}
+            onClose={closeHistory}
+            billId={historyBillId}
+            billName={historyBillName}
+            isShared={historyBillIsShared}
+            shareInfo={historyBillShareInfo}
+            onPaymentsChanged={fetchBills}
+          />
+        )}
 
-      <TelemetryNoticeModal opened={telemetryModalOpened} onClose={closeTelemetryModal} />
+        {telemetryModalOpened && (
+          <TelemetryNoticeModal opened={telemetryModalOpened} onClose={closeTelemetryModal} />
+        )}
 
-      <ReleaseNotesModal key={releaseNotesKey} opened={releaseNotesOpened} onClose={closeReleaseNotes} />
+        {releaseNotesOpened && (
+          <ReleaseNotesModal key={releaseNotesKey} opened={releaseNotesOpened} onClose={closeReleaseNotes} />
+        )}
+      </Suspense>
     </>
   );
 }

@@ -45,6 +45,8 @@ const renderLogin = () => {
   )
 }
 
+const getPasswordInput = () => screen.getByPlaceholderText(/enter your password/i)
+
 describe('Login Page', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -56,7 +58,7 @@ describe('Login Page', () => {
       renderLogin()
       expect(screen.getByText('BillManager')).toBeInTheDocument()
       expect(screen.getByLabelText(/username/i)).toBeInTheDocument()
-      expect(screen.getByLabelText(/password/i)).toBeInTheDocument()
+      expect(getPasswordInput()).toBeInTheDocument()
       expect(screen.getByRole('button', { name: /sign in/i })).toBeInTheDocument()
     })
 
@@ -73,7 +75,7 @@ describe('Login Page', () => {
 
       // Type and clear to trigger validation on non-empty then empty
       const usernameInput = screen.getByLabelText(/username/i)
-      const passwordInput = screen.getByLabelText(/password/i)
+      const passwordInput = getPasswordInput()
 
       // Focus and blur without typing to simulate interaction
       await user.click(usernameInput)
@@ -107,7 +109,7 @@ describe('Login Page', () => {
       renderLogin()
 
       await user.type(screen.getByLabelText(/username/i), 'testuser')
-      await user.type(screen.getByLabelText(/password/i), 'testpassword')
+      await user.type(getPasswordInput(), 'testpassword')
 
       const submitButton = screen.getByRole('button', { name: /sign in/i })
       await user.click(submitButton)
@@ -123,7 +125,7 @@ describe('Login Page', () => {
       renderLogin()
 
       await user.type(screen.getByLabelText(/username/i), 'testuser')
-      await user.type(screen.getByLabelText(/password/i), 'wrongpassword')
+      await user.type(getPasswordInput(), 'wrongpassword')
 
       const submitButton = screen.getByRole('button', { name: /sign in/i })
       await user.click(submitButton)
@@ -140,7 +142,7 @@ describe('Login Page', () => {
       renderLogin()
 
       await user.type(screen.getByLabelText(/username/i), 'testuser')
-      await user.type(screen.getByLabelText(/password/i), 'testpassword')
+      await user.type(getPasswordInput(), 'testpassword')
 
       const submitButton = screen.getByRole('button', { name: /sign in/i })
       await user.click(submitButton)

@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import '@mantine/charts/styles.css';
 import { Paper, Text, Loader, Center } from '@mantine/core';
 import { AreaChart } from '@mantine/charts';
 import { getBillMonthlyPayments } from '../api/client';

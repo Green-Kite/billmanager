@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import '@mantine/charts/styles.css';
 import { Modal, Stack, Text, Loader, Center, Paper, Group, SegmentedControl, SimpleGrid, Alert } from '@mantine/core';
 import { LineChart, BarChart } from '@mantine/charts';
 import { IconAlertCircle } from '@tabler/icons-react';

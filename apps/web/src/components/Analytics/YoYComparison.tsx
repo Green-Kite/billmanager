@@ -1,4 +1,5 @@
 import { useMemo } from 'react';
+import '@mantine/charts/styles.css';
 import { Paper, Title, Text, Box, Group, Stack } from '@mantine/core';
 import { BarChart } from '@mantine/charts';
 import type { MonthlyComparison } from '../../api/client';
@@ -92,14 +93,15 @@ export function YoYComparison({ data, loading }: YoYComparisonProps) {
         tooltipProps={{
           content: ({ payload }) => {
             if (!payload || payload.length === 0) return null;
+            const firstPayload = payload[0]?.payload as { month?: string } | undefined;
             return (
               <Paper px="md" py="sm" withBorder shadow="md" radius="md">
-                <Text size="sm" fw={500} mb="xs">{payload[0].payload.month}</Text>
-                {payload.map((item: { name?: string; value?: number; color?: string }) => (
-                  <Group key={item.name} gap="xs">
+                <Text size="sm" fw={500} mb="xs">{firstPayload?.month}</Text>
+                {payload.map((item) => (
+                  <Group key={String(item.name)} gap="xs">
                     <Box style={{ width: 8, height: 8, background: item.color, borderRadius: 2 }} />
                     <Text size="sm">
-                      {item.name}: ${(item.value ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                      {String(item.name)}: ${Number(item.value ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}
                     </Text>
                   </Group>
                 ))}

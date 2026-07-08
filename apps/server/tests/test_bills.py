@@ -250,8 +250,8 @@ class TestBillCategoriesAndBudgets:
         assert get_data['data']['category'] == 'Subscriptions'
         assert get_data['data']['notes'] == 'Promotional rate'
 
-    def test_get_categories_includes_bills_and_budgets(self, client, auth_headers_with_db):
-        """Test category discovery includes entered bills and configured budgets."""
+    def test_get_categories_includes_bill_categories_only(self, client, auth_headers_with_db):
+        """Test category discovery includes entered bill categories without budget-only values."""
         bill_response = client.post('/api/v2/bills',
                                     headers=auth_headers_with_db,
                                     json={
@@ -273,7 +273,7 @@ class TestBillCategoriesAndBudgets:
         assert response.status_code == 200
         data = json.loads(response.data)
         assert 'Utilities' in data['data']
-        assert 'Groceries' in data['data']
+        assert 'Groceries' not in data['data']
 
     def test_budget_crud_and_monthly_summary(self, client, auth_headers_with_db):
         """Test creating, updating, summarizing, and deleting category budgets."""

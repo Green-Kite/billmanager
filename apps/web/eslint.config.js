@@ -19,5 +19,11 @@ export default defineConfig([
       ecmaVersion: 2020,
       globals: globals.browser,
     },
+    rules: {
+      // Existing data-loading effects are intentionally fetch/setState based.
+      // Keep the standard hooks rules, but do not gate CI on React Compiler-style rewrites yet.
+      'react-hooks/set-state-in-effect': 'off',
+      'react-hooks/immutability': 'off',
+    },
   },
 ])

@@ -41,7 +41,7 @@ services:
     restart: unless-stopped
 
   db:
-    image: postgres:16-alpine
+    image: postgres:17-alpine
     environment:
       - POSTGRES_USER=billsuser
       - POSTGRES_PASSWORD=change-me  # Match DATABASE_URL password

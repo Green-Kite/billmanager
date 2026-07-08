@@ -2776,7 +2776,7 @@ def process_auto_payments():
 def get_version():
     return jsonify(
         {
-            "version": "4.2.1",
+            "version": "4.2.2",
             "license": "O'Saasy",
             "license_url": "https://osaasy.dev/",
             "features": [
@@ -4437,6 +4437,7 @@ def jwt_get_all_payments():
                 "bill_icon": p.bill.icon,
                 "bill_type": effective_type,  # Use effective type for proper categorization
                 "original_bill_type": p.bill.type,  # Keep original for reference
+                "category": p.bill.category,
                 "is_share_payment": is_received_from_sharee,
                 "is_received_payment": is_received_from_sharee,  # True = money received from sharee
                 "database_id": p.bill.database_id,
@@ -4468,6 +4469,7 @@ def jwt_get_all_payments():
                 "bill_icon": p.bill.icon,
                 "bill_type": effective_type,
                 "original_bill_type": p.bill.type,
+                "category": p.bill.category,
                 "is_share_payment": True,
                 "is_received_payment": False,  # False = money paid out by sharee
                 "database_id": p.bill.database_id,
@@ -5413,7 +5415,7 @@ def jwt_get_accounts():
 @limiter.limit("60 per minute")
 @jwt_required
 def jwt_get_categories():
-    """Get distinct bill and budget categories for the selected bill group(s)."""
+    """Get distinct bill categories for the selected bill group(s)."""
     if not g.jwt_db_name:
         return jsonify({"success": False, "error": "X-Database header required"}), 400
 
@@ -5432,14 +5434,7 @@ def jwt_get_categories():
         .distinct()
         .all()
     )
-    budget_categories = (
-        db.session.query(CategoryBudget.category)
-        .filter(CategoryBudget.database_id.in_(accessible_db_ids))
-        .distinct()
-        .all()
-    )
-
-    categories = sorted({row[0] for row in bill_categories + budget_categories if row[0]})
+    categories = sorted({row[0] for row in bill_categories if row[0]})
     return jsonify({"success": True, "data": categories})
 
 
@@ -8669,7 +8664,7 @@ def jwt_get_version():
         {
             "success": True,
             "data": {
-                "version": "4.2.1",
+                "version": "4.2.2",
                 "api_version": "v2",
                 "license": "O'Saasy",
                 "license_url": "https://osaasy.dev/",

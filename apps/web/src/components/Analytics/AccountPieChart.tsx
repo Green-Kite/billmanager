@@ -1,4 +1,5 @@
 import { useMemo } from 'react';
+import '@mantine/charts/styles.css';
 import { Paper, Title, Text, Stack, Group, Box, ColorSwatch } from '@mantine/core';
 import { PieChart } from '@mantine/charts';
 import type { AccountStats } from '../../api/client';

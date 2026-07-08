@@ -1,11 +1,10 @@
 import { useEffect, useState } from 'react';
-import { Stack, Title, Group, Button, Text, Paper, Loader, Center, Grid, Alert, Badge } from '@mantine/core';
-import { IconPlus, IconReceipt, IconAlertTriangle, IconBellRinging } from '@tabler/icons-react';
+import { Stack, Title, Group, Button, Text, Paper, Loader, Center, Grid } from '@mantine/core';
+import { IconPlus, IconReceipt } from '@tabler/icons-react';
 import { StatCards } from '../components/Dashboard/StatCards';
 import { UpcomingBillsList } from '../components/Dashboard/UpcomingBillsList';
-import { CashFlowForecast } from '../components/Dashboard/CashFlowForecast';
-import type { Bill, ReminderAlert } from '../api/client';
-import { getMonthlyPayments, getReminderAlerts } from '../api/client';
+import type { Bill } from '../api/client';
+import { getMonthlyPayments } from '../api/client';
 
 interface DashboardProps {
   bills: Bill[];
@@ -31,7 +30,6 @@ export function Dashboard({
   hasDatabase,
 }: DashboardProps) {
   const [monthlyPaid, setMonthlyPaid] = useState(0);
-  const [alerts, setAlerts] = useState<ReminderAlert[]>([]);
 
   // Fetch monthly payments to get paid amount
   useEffect(() => {
@@ -47,16 +45,6 @@ export function Dashboard({
           setMonthlyPaid(0);
         });
     }
-  }, [hasDatabase, bills]);
-
-  useEffect(() => {
-    if (!hasDatabase) {
-      return;
-    }
-
-    getReminderAlerts()
-      .then((res) => setAlerts(Array.isArray(res) ? res : []))
-      .catch(() => setAlerts([]));
   }, [hasDatabase, bills]);
 
   if (!hasDatabase) {
@@ -95,60 +83,6 @@ export function Dashboard({
 
       {/* Stat Cards */}
       <StatCards bills={bills} monthlyPaid={monthlyPaid} onStatClick={onStatClick} />
-
-      <CashFlowForecast hasDatabase={hasDatabase} />
-
-      {alerts.length > 0 && (
-        <Alert
-          color={alerts.some((alert) => alert.severity === 'critical') ? 'red' : 'yellow'}
-          variant="light"
-          icon={<IconBellRinging size={20} />}
-          title={`${alerts.length} Reminder Alert${alerts.length === 1 ? '' : 's'}`}
-        >
-          <Stack gap="xs" mt="sm">
-            {alerts.slice(0, 4).map((alert) => {
-              const bill = bills.find((item) => item.id === alert.bill_id);
-              return (
-                <Paper key={`${alert.type}-${alert.bill_id}`} withBorder p="sm" radius="sm">
-                  <Group justify="space-between" wrap="nowrap">
-                    <div>
-                      <Group gap="xs">
-                        <Text fw={600}>{alert.title}</Text>
-                        <Badge
-                          size="xs"
-                          color={alert.severity === 'critical' ? 'red' : alert.severity === 'warning' ? 'yellow' : 'blue'}
-                          variant="light"
-                        >
-                          {alert.database_name}
-                        </Badge>
-                      </Group>
-                      <Text size="xs" c="dimmed">
-                        {alert.message}
-                        {alert.amount !== null ? ` - $${alert.amount.toFixed(2)}` : ''}
-                      </Text>
-                    </div>
-                    {bill && bill.type !== 'deposit' && !bill.is_shared && (
-                      <Button
-                        size="xs"
-                        color={alert.severity === 'critical' ? 'red' : 'green'}
-                        leftSection={<IconAlertTriangle size={14} />}
-                        onClick={() => onPayBill(bill)}
-                      >
-                        Pay
-                      </Button>
-                    )}
-                  </Group>
-                </Paper>
-              );
-            })}
-            {alerts.length > 4 && (
-              <Text size="xs" c="dimmed" ta="center">
-                + {alerts.length - 4} more alert{alerts.length - 4 === 1 ? '' : 's'}
-              </Text>
-            )}
-          </Stack>
-        </Alert>
-      )}
 
       {/* Content Grid */}
       <Grid>

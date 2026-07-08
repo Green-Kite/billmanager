@@ -239,6 +239,7 @@ export interface PaymentWithBill extends Payment {
   bill_icon: string;
   bill_type?: 'expense' | 'deposit' | 'bill';  // Effective type for categorization
   original_bill_type?: string;  // Original bill type
+  category?: string | null;
   is_share_payment?: boolean;  // True if this is a shared bill payment
   is_received_payment?: boolean;  // True if this is money received from a sharee (owner view)
   notes?: string;
@@ -504,47 +505,6 @@ export const getBillMonthlyPayments = (billName: string) =>
 // Auto-payment API
 export const processAutoPayments = () =>
   unwrap(api.post<ApiResponse<void>>('/process-auto-payments'));
-
-export interface CategoryBudget {
-  id: number;
-  database_id: number;
-  database_name?: string | null;
-  category: string;
-  monthly_limit: number;
-  created_at?: string | null;
-  updated_at?: string | null;
-}
-
-export interface BudgetSummaryItem {
-  budget_id: number | null;
-  database_id: number;
-  database_name: string;
-  category: string;
-  monthly_limit: number | null;
-  spent: number;
-  remaining: number | null;
-  percent_used: number | null;
-  over_budget: boolean;
-  month: string;
-}
-
-export const getBudgets = () =>
-  unwrap(api.get<ApiResponse<CategoryBudget[]>>('/budgets'));
-
-export const createBudget = (data: { category: string; monthly_limit: number; database_id?: number | null }) =>
-  unwrap(api.post<ApiResponse<CategoryBudget>>('/budgets', data));
-
-export const updateBudget = (
-  id: number,
-  data: { category?: string; monthly_limit?: number; database_id?: number | null }
-) =>
-  unwrap(api.put<ApiResponse<CategoryBudget>>(`/budgets/${id}`, data));
-
-export const deleteBudget = (id: number) =>
-  unwrap(api.delete<ApiResponse<{ message: string }>>(`/budgets/${id}`));
-
-export const getBudgetSummary = (month?: string) =>
-  unwrap(api.get<ApiResponse<BudgetSummaryItem[]>>(`/budgets/summary${month ? `?month=${encodeURIComponent(month)}` : ''}`));
 
 export interface ReminderAlert {
   type: 'overdue' | 'due_today' | 'deposit_today' | 'upcoming' | 'deposit_expected';

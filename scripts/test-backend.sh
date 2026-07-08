@@ -10,7 +10,7 @@ DB_PASSWORD="${BACKEND_TEST_DB_PASSWORD:-billspass}"
 DB_NAME="${BACKEND_TEST_DB_NAME:-bills_test}"
 DB_PORT="${BACKEND_TEST_DB_PORT:-5432}"
 DATABASE_URL="${DATABASE_URL:-postgresql://${DB_USER}:${DB_PASSWORD}@localhost:${DB_PORT}/${DB_NAME}}"
-DB_IMAGE="${BACKEND_TEST_DB_IMAGE:-postgres:16-alpine}"
+DB_IMAGE="${BACKEND_TEST_DB_IMAGE:-postgres:17-alpine}"
 DB_ONLY=0
 
 if [[ "${1:-}" == "--db-only" ]]; then
