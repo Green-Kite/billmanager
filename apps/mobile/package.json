@@ -2,6 +2,9 @@
   "name": "@billmanager/mobile",
   "version": "1.0.0-alpha",
   "main": "index.ts",
+  "engines": {
+    "node": ">=24.18.0 <25"
+  },
   "overrides": {
     "@babel/core": "^7.29.6",
     "lodash": "^4.18.1",

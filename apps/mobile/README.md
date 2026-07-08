@@ -5,7 +5,7 @@ React Native app built with Expo for Android/iOS.
 ## Development Setup
 
 ### Prerequisites
-- Node.js 18+
+- Node.js 24.18.0 LTS
 - npm or yarn
 - Expo Go app (for physical device) OR Android Studio (for emulator)
 
