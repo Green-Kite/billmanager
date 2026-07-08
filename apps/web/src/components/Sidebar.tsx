@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { Stack, Title, Text, Group, Badge, Divider, NavLink } from '@mantine/core';
-import { IconCalendar, IconHome, IconReceipt, IconChartPie, IconListDetails } from '@tabler/icons-react';
+import { IconCalendar, IconHome, IconReceipt, IconChartPie, IconListDetails, IconShare } from '@tabler/icons-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import type { Bill } from '../api/client';
 import type { BillFilter, DateRangeFilter } from '../App';
@@ -119,6 +119,13 @@ export function Sidebar({ bills, isLoggedIn, filter, onFilterChange }: SidebarPr
             leftSection={<IconChartPie size={16} />}
             active={location.pathname === '/analytics'}
             onClick={() => navigate('/analytics')}
+            variant="light"
+          />
+          <NavLink
+            label="Settlements"
+            leftSection={<IconShare size={16} />}
+            active={location.pathname === '/settlements'}
+            onClick={() => navigate('/settlements')}
             variant="light"
           />
           <Divider my="xs" />

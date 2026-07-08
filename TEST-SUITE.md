@@ -49,7 +49,7 @@ echo $?  # 0 = all tests passed, 1 = some tests failed
 |-----------|--------------|
 | **Backend** | Flask on port 5001 |
 | **Frontend** | Vite dev server on port 5173 |
-| **Database** | `bills_test` on 192.168.40.240 |
+| **Database** | `bills_test` on PostgreSQL 17 LXC (`192.168.40.113`) |
 | **Browser** | Chromium (Playwright) |
 | **Output** | `/tmp/billmanager-test-results/` |
 
@@ -113,10 +113,10 @@ Ensure PostgreSQL is running and accessible:
 
 ```bash
 # Test connection
-psql postgresql://billsuser:billspass@192.168.40.240:5432/bills_test -c "SELECT 1"
+psql postgresql://billsuser:billspass@192.168.40.113:5432/bills_test -c "SELECT 1"
 
 # Check if database exists
-psql postgresql://billsuser:billspass@192.168.40.240:5432/postgres -c "\l" | grep bills_test
+psql postgresql://billsuser:billspass@192.168.40.113:5432/postgres -c "\l" | grep bills_test
 ```
 
 ### Playwright Not Installed

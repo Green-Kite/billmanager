@@ -1,14 +1,17 @@
 import { useEffect, useState, useMemo } from 'react';
-import { Stack, Title, Paper, Center, Text, Grid, Group, SimpleGrid, ThemeIcon, Alert, Loader, SegmentedControl, Divider } from '@mantine/core';
+import { Stack, Title, Paper, Center, Text, Grid, Group, SimpleGrid, ThemeIcon, Alert, Loader, SegmentedControl, Divider, Button, NumberInput, Autocomplete, Select, Table, Progress, ActionIcon, Badge } from '@mantine/core';
 import { BarChart, LineChart } from '@mantine/charts';
-import { IconChartPie, IconTrendingUp, IconTrendingDown, IconAlertCircle } from '@tabler/icons-react';
+import { notifications } from '@mantine/notifications';
+import { IconChartPie, IconTrendingUp, IconTrendingDown, IconAlertCircle, IconPlus, IconEdit, IconTrash, IconCheck, IconX } from '@tabler/icons-react';
 import { AccountPieChart } from '../components/Analytics/AccountPieChart';
 import { YoYComparison } from '../components/Analytics/YoYComparison';
-import { getStatsByAccount, getStatsYearly, getMonthlyComparison, getMonthlyPayments } from '../api/client';
-import type { AccountStats, YearlyStats, MonthlyComparison as MonthlyComparisonType } from '../api/client';
+import { getStatsByAccount, getStatsYearly, getMonthlyComparison, getMonthlyPayments, getBudgetSummary, getCategories, createBudget, updateBudget, deleteBudget } from '../api/client';
+import type { AccountStats, YearlyStats, MonthlyComparison as MonthlyComparisonType, BudgetSummaryItem, Database } from '../api/client';
 
 interface AnalyticsProps {
   hasDatabase: boolean;
+  currentDb?: string | null;
+  databases?: Database[];
 }
 
 interface ChartData {
@@ -17,38 +20,50 @@ interface ChartData {
   total: number;
 }
 
-export function Analytics({ hasDatabase }: AnalyticsProps) {
+export function Analytics({ hasDatabase, currentDb, databases = [] }: AnalyticsProps) {
   const [accountStats, setAccountStats] = useState<AccountStats[]>([]);
   const [yearlyStats, setYearlyStats] = useState<YearlyStats | null>(null);
   const [monthlyComparison, setMonthlyComparison] = useState<MonthlyComparisonType | null>(null);
   const [monthlyPayments, setMonthlyPayments] = useState<Record<string, { deposits: number; expenses: number }>>({});
+  const [budgetSummary, setBudgetSummary] = useState<BudgetSummaryItem[]>([]);
+  const [categories, setCategories] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [chartType, setChartType] = useState<string>('bar');
   const [monthRange, setMonthRange] = useState<string>('12');
+  const [editingBudgetId, setEditingBudgetId] = useState<number | null>(null);
+  const [budgetCategory, setBudgetCategory] = useState('');
+  const [budgetLimit, setBudgetLimit] = useState<number | string>('');
+  const [budgetDatabaseId, setBudgetDatabaseId] = useState<number | null>(null);
+
+  const isAllBucketsMode = currentDb === '_all_';
 
   useEffect(() => {
     if (hasDatabase) {
       loadData();
     }
-  }, [hasDatabase]);
+  }, [hasDatabase, currentDb]);
 
   const loadData = async () => {
     setLoading(true);
     setError(null);
 
     try {
-      const [accounts, yearly, comparison, payments] = await Promise.all([
+      const [accounts, yearly, comparison, payments, budgets, categoryOptions] = await Promise.all([
         getStatsByAccount().catch(() => []),
         getStatsYearly().catch(() => ({})),
         getMonthlyComparison().catch(() => null),
         getMonthlyPayments().catch(() => ({})),
+        getBudgetSummary().catch(() => []),
+        getCategories().catch(() => []),
       ]);
 
       setAccountStats(accounts);
       setYearlyStats(yearly);
       setMonthlyComparison(comparison);
       setMonthlyPayments(payments ?? {});
+      setBudgetSummary(budgets ?? []);
+      setCategories(categoryOptions ?? []);
     } catch (err) {
       setError('Failed to load analytics data');
       console.error(err);
@@ -86,6 +101,97 @@ export function Analytics({ hasDatabase }: AnalyticsProps) {
   const minMonth = monthsWithData.length > 0
     ? monthsWithData.reduce((min, d) => d.total < min.total ? d : min, { total: Infinity, label: 'N/A' } as ChartData)
     : { total: 0, label: 'N/A' } as ChartData;
+
+  const resetBudgetForm = () => {
+    setEditingBudgetId(null);
+    setBudgetCategory('');
+    setBudgetLimit('');
+    setBudgetDatabaseId(null);
+  };
+
+  const handleBudgetSubmit = async () => {
+    const category = budgetCategory.trim();
+    const parsedBudgetLimit = typeof budgetLimit === 'number'
+      ? budgetLimit
+      : Number(String(budgetLimit).replace(/[$,]/g, '').trim());
+
+    if (!category || budgetLimit === '' || !Number.isFinite(parsedBudgetLimit)) {
+      notifications.show({
+        title: 'Budget incomplete',
+        message: 'Choose a category and monthly budget amount.',
+        color: 'red',
+      });
+      return;
+    }
+
+    if (isAllBucketsMode && !budgetDatabaseId) {
+      notifications.show({
+        title: 'Bucket required',
+        message: 'Choose which bucket this budget belongs to.',
+        color: 'red',
+      });
+      return;
+    }
+
+    try {
+      const payload = {
+        category,
+        monthly_limit: parsedBudgetLimit,
+        ...(budgetDatabaseId ? { database_id: budgetDatabaseId } : {}),
+      };
+
+      if (editingBudgetId) {
+        await updateBudget(editingBudgetId, payload);
+        notifications.show({ message: 'Budget updated', color: 'green' });
+      } else {
+        await createBudget(payload);
+        notifications.show({ message: 'Budget added', color: 'green' });
+      }
+
+      resetBudgetForm();
+      await loadData();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unable to save budget';
+      notifications.show({ title: 'Budget save failed', message, color: 'red' });
+    }
+  };
+
+  const handleEditBudget = (item: BudgetSummaryItem) => {
+    setEditingBudgetId(item.budget_id);
+    setBudgetCategory(item.category);
+    setBudgetLimit(item.monthly_limit ?? '');
+    setBudgetDatabaseId(item.database_id);
+  };
+
+  const handleDeleteBudget = async (budgetId: number) => {
+    if (!window.confirm('Delete this category budget? Spending history will be preserved.')) {
+      return;
+    }
+
+    try {
+      await deleteBudget(budgetId);
+      notifications.show({ message: 'Budget deleted', color: 'green' });
+      if (editingBudgetId === budgetId) {
+        resetBudgetForm();
+      }
+      await loadData();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unable to delete budget';
+      notifications.show({ title: 'Delete failed', message, color: 'red' });
+    }
+  };
+
+  const getBudgetProgressColor = (item: BudgetSummaryItem) => {
+    if (item.monthly_limit === null) return 'gray';
+    if (item.over_budget) return 'red';
+    if ((item.percent_used ?? 0) >= 80) return 'yellow';
+    return 'green';
+  };
+
+  const budgetedRows = budgetSummary.filter((item) => item.monthly_limit !== null);
+  const totalBudgetLimit = budgetedRows.reduce((sum, item) => sum + (item.monthly_limit ?? 0), 0);
+  const totalBudgetSpent = budgetedRows.reduce((sum, item) => sum + item.spent, 0);
+  const overBudgetCount = budgetedRows.filter((item) => item.over_budget).length;
 
   if (!hasDatabase) {
     return (
@@ -189,6 +295,162 @@ export function Analytics({ hasDatabase }: AnalyticsProps) {
           </Paper>
         )}
       </SimpleGrid>
+
+      <Paper withBorder p="md" radius="md">
+        <Group justify="space-between" mb="md">
+          <div>
+            <Title order={5}>Category Budgets</Title>
+            <Text size="sm" c="dimmed">
+              Track this month's spending against reusable monthly category limits.
+            </Text>
+          </div>
+          <Group gap="xs">
+            <Badge variant="light" color={overBudgetCount > 0 ? 'red' : 'green'}>
+              {overBudgetCount} over budget
+            </Badge>
+            <Badge variant="light" color="blue">
+              ${totalBudgetSpent.toFixed(2)} / ${totalBudgetLimit.toFixed(2)}
+            </Badge>
+          </Group>
+        </Group>
+
+        <SimpleGrid cols={{ base: 1, md: isAllBucketsMode ? 4 : 3 }} spacing="sm" mb="md">
+          <Autocomplete
+            label="Category"
+            placeholder="Utilities, Housing, Subscriptions..."
+            data={categories}
+            value={budgetCategory}
+            onChange={setBudgetCategory}
+          />
+          <NumberInput
+            label="Monthly budget"
+            placeholder="0.00"
+            prefix="$"
+            decimalScale={2}
+            fixedDecimalScale
+            min={0}
+            value={budgetLimit}
+            onChange={(value) => setBudgetLimit(value ?? '')}
+          />
+          {isAllBucketsMode && (
+            <Select
+              label="Bucket"
+              placeholder="Choose bucket"
+              data={databases.filter((database) => database.id).map((database) => ({
+                value: String(database.id),
+                label: database.display_name,
+              }))}
+              value={budgetDatabaseId ? String(budgetDatabaseId) : null}
+              onChange={(value) => setBudgetDatabaseId(value ? Number(value) : null)}
+            />
+          )}
+          <Group align="flex-end" gap="xs">
+            <Button
+              leftSection={editingBudgetId ? <IconCheck size={16} /> : <IconPlus size={16} />}
+              onClick={handleBudgetSubmit}
+              fullWidth
+            >
+              {editingBudgetId ? 'Update Budget' : 'Add Budget'}
+            </Button>
+            {editingBudgetId && (
+              <ActionIcon variant="subtle" color="gray" size="lg" onClick={resetBudgetForm}>
+                <IconX size={18} />
+              </ActionIcon>
+            )}
+          </Group>
+        </SimpleGrid>
+
+        {budgetSummary.length === 0 ? (
+          <Paper withBorder p="md" radius="sm" bg="var(--mantine-color-default)">
+            <Text size="sm" c="dimmed">
+              No category spending yet. Add categories to bills and record payments to see budget progress here.
+            </Text>
+          </Paper>
+        ) : (
+          <Table striped highlightOnHover>
+            <Table.Thead>
+              <Table.Tr>
+                <Table.Th>Category</Table.Th>
+                <Table.Th>Budget</Table.Th>
+                <Table.Th>Spent</Table.Th>
+                <Table.Th>Remaining</Table.Th>
+                <Table.Th>Usage</Table.Th>
+                <Table.Th>Actions</Table.Th>
+              </Table.Tr>
+            </Table.Thead>
+            <Table.Tbody>
+              {budgetSummary.map((item) => (
+                <Table.Tr key={`${item.database_id}-${item.category}-${item.budget_id ?? 'unbudgeted'}`}>
+                  <Table.Td>
+                    <Text fw={600}>{item.category}</Text>
+                    {isAllBucketsMode && (
+                      <Text size="xs" c="dimmed">
+                        {item.database_name}
+                      </Text>
+                    )}
+                  </Table.Td>
+                  <Table.Td>
+                    {item.monthly_limit === null ? (
+                      <Badge color="gray" variant="light">Unbudgeted</Badge>
+                    ) : (
+                      <Text fw={500}>${item.monthly_limit.toFixed(2)}</Text>
+                    )}
+                  </Table.Td>
+                  <Table.Td>
+                    <Text c={item.spent > 0 ? 'red' : 'dimmed'}>${item.spent.toFixed(2)}</Text>
+                  </Table.Td>
+                  <Table.Td>
+                    {item.remaining === null ? (
+                      <Text c="dimmed">-</Text>
+                    ) : (
+                      <Text c={item.remaining < 0 ? 'red' : 'green'}>
+                        {item.remaining < 0 ? '-' : ''}${Math.abs(item.remaining).toFixed(2)}
+                      </Text>
+                    )}
+                  </Table.Td>
+                  <Table.Td>
+                    {item.percent_used === null ? (
+                      <Progress value={0} color="gray" />
+                    ) : (
+                      <Progress
+                        value={Math.min(item.percent_used, 100)}
+                        color={getBudgetProgressColor(item)}
+                      />
+                    )}
+                    {item.percent_used !== null && (
+                      <Text size="xs" c="dimmed" mt={2}>
+                        {item.percent_used.toFixed(0)}%
+                      </Text>
+                    )}
+                  </Table.Td>
+                  <Table.Td>
+                    <Group gap="xs">
+                      <ActionIcon
+                        variant="subtle"
+                        color="blue"
+                        onClick={() => handleEditBudget(item)}
+                        title={item.budget_id ? 'Edit budget' : 'Set budget'}
+                      >
+                        <IconEdit size={16} />
+                      </ActionIcon>
+                      {item.budget_id && (
+                        <ActionIcon
+                          variant="subtle"
+                          color="red"
+                          onClick={() => handleDeleteBudget(item.budget_id!)}
+                          title="Delete budget"
+                        >
+                          <IconTrash size={16} />
+                        </ActionIcon>
+                      )}
+                    </Group>
+                  </Table.Td>
+                </Table.Tr>
+              ))}
+            </Table.Tbody>
+          </Table>
+        )}
+      </Paper>
 
       {/* Spending Trends */}
       {totalSpent > 0 && (

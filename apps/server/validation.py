@@ -201,6 +201,43 @@ def validate_bill_name(name: str) -> Tuple[bool, Optional[str]]:
     return True, None
 
 
+def validate_category(category: Optional[str]) -> Tuple[bool, Optional[str]]:
+    """
+    Validate an optional bill/budget category.
+
+    Rules:
+    - Empty values are allowed for bills
+    - Maximum 50 characters
+    - Cannot contain control characters
+    """
+    if category is None:
+        return True, None
+
+    category = str(category).strip()
+    if not category:
+        return True, None
+
+    if len(category) > 50:
+        return False, "Category must be 50 characters or less"
+
+    if any(ord(ch) < 32 for ch in category):
+        return False, "Category contains invalid characters"
+
+    return True, None
+
+
+def validate_notes(notes: Optional[str]) -> Tuple[bool, Optional[str]]:
+    """Validate optional free-text notes."""
+    if notes is None:
+        return True, None
+
+    notes = str(notes)
+    if len(notes) > 2000:
+        return False, "Notes must be 2000 characters or less"
+
+    return True, None
+
+
 def validate_database_name(name: str) -> Tuple[bool, Optional[str]]:
     """
     Validate database/bill group name.

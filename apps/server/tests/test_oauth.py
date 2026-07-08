@@ -300,6 +300,63 @@ class TestMicrosoftIssuer:
 
 
 # ---------------------------------------------------------------------------
+# Generic OIDC token endpoint client authentication
+# ---------------------------------------------------------------------------
+
+
+class TestOidcTokenEndpointAuth:
+    """Self-hosted IdPs may require different token endpoint auth methods."""
+
+    def test_client_secret_basic_uses_http_basic_auth(
+        self, client, db_session, admin_user, monkeypatch
+    ):
+        """Generic OIDC can authenticate the token request with HTTP Basic."""
+        provider = "oidc"
+        client_id = _set_provider_config(monkeypatch, provider)
+        OAUTH_PROVIDERS[provider]["token_auth_method"] = "client_secret_basic"
+        sub = "oidc-basic-user"
+        _link_account(db_session, admin_user, provider, sub)
+
+        claims = {
+            "iss": f"https://issuer.example/{provider}",
+            "aud": client_id,
+            "nonce": "nonce-123",
+            "sub": sub,
+            "email": "admin@test.com",
+            "email_verified": True,
+        }
+
+        with _mock_oauth_dependencies(provider, client_id, claims) as mocks:
+            response = _call_callback(client, provider)
+
+        token_request = mocks["post"].call_args
+        assert response.status_code == 200
+        assert response.get_json()["success"] is True
+        assert token_request.kwargs["auth"] == (client_id, "test-client-secret")
+        assert "client_secret" not in token_request.kwargs["data"]
+        assert "client_id" not in token_request.kwargs["data"]
+
+    def test_public_oidc_client_can_be_enabled_without_secret(self, monkeypatch):
+        """Generic OIDC public clients can opt into token_auth_method=none."""
+        monkeypatch.setitem(
+            OAUTH_PROVIDERS,
+            "oidc",
+            {
+                "enabled": True,
+                "client_id": "public-client",
+                "client_secret": None,
+                "token_auth_method": "none",
+                "discovery_url": "https://issuer.example/oidc/.well-known/openid-configuration",
+                "scopes": "openid email profile",
+                "display_name": "SSO",
+                "icon": "lock",
+            },
+        )
+
+        assert "oidc" in config.get_enabled_oauth_providers()
+
+
+# ---------------------------------------------------------------------------
 # Bug 2: Userinfo fetch when email missing from ID token
 # ---------------------------------------------------------------------------
 

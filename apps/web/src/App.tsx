@@ -28,6 +28,7 @@ import { Billing } from './pages/Billing';
 import { Dashboard } from './pages/Dashboard';
 import { CalendarPage } from './pages/CalendarPage';
 import { Analytics } from './pages/Analytics';
+import { Settlements } from './pages/Settlements';
 import { Settings } from './pages/Settings';
 import { useAuth } from './context/AuthContext';
 import { useConfig } from './context/ConfigContext';
@@ -64,6 +65,7 @@ export interface BillFilter {
   selectedDate: string | null; // YYYY-MM-DD format
   type: 'all' | 'expense' | 'deposit';
   account: string | null;
+  category: string | null;
 }
 
 function App() {
@@ -86,6 +88,7 @@ function App() {
     selectedDate: null,
     type: 'all',
     account: null,
+    category: null,
   });
 
   // Modal states
@@ -121,7 +124,9 @@ function App() {
         const nameMatch = bill.name.toLowerCase().includes(query);
         const amountMatch = bill.amount?.toString().includes(query);
         const dateMatch = bill.next_due.includes(query);
-        return nameMatch || amountMatch || dateMatch;
+        const categoryMatch = bill.category?.toLowerCase().includes(query);
+        const notesMatch = bill.notes?.toLowerCase().includes(query);
+        return nameMatch || amountMatch || dateMatch || categoryMatch || notesMatch;
       });
     } else {
       // When not searching, hide archived bills
@@ -136,6 +141,11 @@ function App() {
     // Apply account filter
     if (filter.account) {
       result = result.filter((bill) => bill.account === filter.account);
+    }
+
+    // Apply category filter
+    if (filter.category) {
+      result = result.filter((bill) => bill.category === filter.category);
     }
 
     // Apply date range filter
@@ -455,11 +465,11 @@ function App() {
                 onViewBills={() => navigate('/bills')}
                 onStatClick={(stat) => {
                   if (stat === 'total') {
-                    setFilter({ searchQuery: '', dateRange: 'all', selectedDate: null, type: 'all', account: null });
+                    setFilter({ searchQuery: '', dateRange: 'all', selectedDate: null, type: 'all', account: null, category: null });
                   } else if (stat === 'thisWeek') {
-                    setFilter({ searchQuery: '', dateRange: 'thisWeek', selectedDate: null, type: 'all', account: null });
+                    setFilter({ searchQuery: '', dateRange: 'thisWeek', selectedDate: null, type: 'all', account: null, category: null });
                   } else if (stat === 'overdue') {
-                    setFilter({ searchQuery: '', dateRange: 'overdue', selectedDate: null, type: 'all', account: null });
+                    setFilter({ searchQuery: '', dateRange: 'overdue', selectedDate: null, type: 'all', account: null, category: null });
                   }
                   navigate('/bills');
                 }}
@@ -484,8 +494,8 @@ function App() {
                     onViewPayments={handleViewPayments}
                     isLoggedIn={isLoggedIn}
                     hasDatabase={!!currentDb}
-                    hasActiveFilter={filter.searchQuery !== '' || filter.dateRange !== 'all' || filter.selectedDate !== null}
-                    onClearFilter={() => setFilter({ searchQuery: '', dateRange: 'all', selectedDate: null, type: 'all', account: null })}
+                    hasActiveFilter={filter.searchQuery !== '' || filter.dateRange !== 'all' || filter.selectedDate !== null || filter.type !== 'all' || filter.account !== null || filter.category !== null}
+                    onClearFilter={() => setFilter({ searchQuery: '', dateRange: 'all', selectedDate: null, type: 'all', account: null, category: null })}
                     searchQuery={filter.searchQuery}
                     onSearchChange={(query) => setFilter((prev) => ({ ...prev, searchQuery: query }))}
                     filter={filter}
@@ -512,8 +522,9 @@ function App() {
           />
           <Route
             path="/analytics"
-            element={<Analytics hasDatabase={!!currentDb} />}
+            element={<Analytics hasDatabase={!!currentDb} currentDb={currentDb} databases={databases} />}
           />
+          <Route path="/settlements" element={<Settlements hasDatabase={!!currentDb} />} />
           <Route path="/settings" element={<Settings />} />
           {billingEnabled && (
             <>

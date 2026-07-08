@@ -6,17 +6,17 @@ A **secure multi-user** web application for tracking recurring expenses and inco
 
 ---
 
-## 🎉 What's New in v4.0.2
+## 🎉 What's New in v4.1.1
 
-**Social Login & Two-Factor Authentication** - Sign in with Google, Apple, Microsoft, or your own OIDC provider. Protect your account with email OTP or passkey-based two-factor authentication.
+**Self-Hosted OIDC Providers** - Bring your own Authelia, Authentik, Keycloak, or other OIDC provider for one-click sign-in.
 
 ### Highlights
 
-- **Social Login (OIDC)** - Connect Google, Apple, Microsoft, or custom OIDC providers for one-click sign-in
-- **Two-Factor Authentication** - Email OTP and passkey (WebAuthn) support for account security
-- **Recovery Codes** - Backup access codes in case you lose your 2FA device
-- **Linked Accounts** - Manage connected OAuth providers from your Security Settings
-- **Security Hardened** - ID token signature verification, state replay protection, cryptographic OTP generation
+- **Generic OIDC** - Configure a self-hosted identity provider with discovery URL, scopes, and display name
+- **Flexible Token Auth** - Use `client_secret_post`, `client_secret_basic`, `none`, or `auto` for provider-specific token exchanges
+- **Claim Mapping** - Map custom email, username, and display-name claims without code changes
+- **Provider Compatibility** - Userinfo fallback and optional email verification bypass support IdPs that keep ID tokens minimal
+- **Secure Linking** - PKCE, nonce validation, JWKS signature verification, replay protection, and linked-account management
 
 ---
 
@@ -184,7 +184,7 @@ postgresql://USERNAME:PASSWORD@HOST:PORT/DATABASE
 | `WEBAUTHN_RP_ID` | WebAuthn relying party ID (domain only) | Derived from `APP_URL` |
 | `WEBAUTHN_RP_NAME` | WebAuthn relying party display name | `BillManager` |
 | `WEBAUTHN_ORIGIN` | WebAuthn origin (must match app origin) | `APP_URL` |
-| `OAUTH_AUTO_REGISTER` | Auto-create users during social sign-in | `false` |
+| `OAUTH_AUTO_REGISTER` | Auto-create users during social sign-in | `true` in self-hosted, `false` in SaaS |
 | `OAUTH_GOOGLE_ENABLED` | Enable Google sign-in | `false` |
 | `OAUTH_GOOGLE_CLIENT_ID` | Google OAuth client ID | None |
 | `OAUTH_GOOGLE_CLIENT_SECRET` | Google OAuth client secret | None |
@@ -204,6 +204,7 @@ postgresql://USERNAME:PASSWORD@HOST:PORT/DATABASE
 | `OAUTH_OIDC_DISPLAY_NAME` | Display name shown on login button | `SSO` |
 | `OAUTH_OIDC_ICON` | Icon name for login button (Tabler icon without `Icon` prefix) | `lock` |
 | `OAUTH_OIDC_SCOPES` | OAuth scopes to request | `openid email profile` |
+| `OAUTH_OIDC_TOKEN_AUTH_METHOD` | Token endpoint client auth method: `client_secret_post`, `client_secret_basic`, `none`, or `auto` | `client_secret_post` |
 | `OAUTH_OIDC_EMAIL_CLAIM` | Claim name for user's email address | `email` |
 | `OAUTH_OIDC_USERNAME_CLAIM` | Claim name for username | `preferred_username` |
 | `OAUTH_OIDC_NAME_CLAIM` | Claim name for display name | `name` |
@@ -228,6 +229,7 @@ This ensures secure self-hosted deployments while remaining flexible for develop
 - OAuth callback URL for Google/Apple should be: `https://<your-domain>/auth/callback`.
 - For Microsoft sign-in, register an app in Azure AD and set redirect URI to: `https://<your-domain>/auth/callback`
 - For generic OIDC, set `OAUTH_OIDC_DISCOVERY_URL` to your provider's `.well-known/openid-configuration` URL
+- Set `OAUTH_OIDC_TOKEN_AUTH_METHOD=client_secret_basic` for OIDC clients configured to authenticate to the token endpoint with HTTP Basic auth, or `none` only for public clients that do not use a client secret
 - Self-hosted OIDC providers (Authentik, Authelia) may need `OAUTH_OIDC_SKIP_EMAIL_VERIFICATION=true` if they don't include `email_verified` in tokens
 - Custom claim mapping (`OAUTH_OIDC_EMAIL_CLAIM`, etc.) is available when your OIDC provider uses non-standard claim names
 

@@ -64,7 +64,7 @@ function escapeCSV(value: string | number | null | undefined): string {
 
 // Export bills to CSV
 export function exportBillsToCSV(bills: Bill[], filename?: string): void {
-  const headers = ['Name', 'Type', 'Amount', 'Next Due', 'Frequency', 'Account', 'Auto-pay', 'Archived'];
+  const headers = ['Name', 'Type', 'Amount', 'Next Due', 'Frequency', 'Account', 'Category', 'Notes', 'Auto-pay', 'Archived'];
 
   const rows = bills.map(bill => [
     escapeCSV(bill.name),
@@ -73,6 +73,8 @@ export function exportBillsToCSV(bills: Bill[], filename?: string): void {
     escapeCSV(formatDate(bill.next_due)),
     escapeCSV(formatFrequency(bill)),
     escapeCSV(bill.account || ''),
+    escapeCSV(bill.category || ''),
+    escapeCSV(bill.notes || ''),
     escapeCSV(bill.auto_payment ? 'Yes' : 'No'),
     escapeCSV(bill.archived ? 'Yes' : 'No'),
   ]);
@@ -109,7 +111,7 @@ export function exportBillsToPDF(bills: Bill[], filename?: string): void {
   // Table
   autoTable(doc, {
     startY: 52,
-    head: [['Name', 'Type', 'Amount', 'Next Due', 'Frequency', 'Account']],
+    head: [['Name', 'Type', 'Amount', 'Next Due', 'Frequency', 'Account', 'Category']],
     body: bills.map(bill => [
       bill.name,
       bill.type === 'deposit' ? 'Deposit' : 'Expense',
@@ -117,6 +119,7 @@ export function exportBillsToPDF(bills: Bill[], filename?: string): void {
       formatDate(bill.next_due),
       formatFrequency(bill),
       bill.account || '-',
+      bill.category || '-',
     ]),
     styles: { fontSize: 9 },
     headStyles: { fillColor: [16, 185, 129] }, // Emerald green (#10B981)

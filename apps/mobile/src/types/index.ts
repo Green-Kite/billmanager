@@ -38,9 +38,12 @@ export interface Bill {
   frequency_config: string;
   next_due: string;
   auto_payment: boolean;
+  reminder_enabled?: boolean;
+  reminder_days?: number[];
   icon: string;
   type: 'expense' | 'deposit';
   account: string | null;
+  category: string | null;
   notes: string | null;
   archived: boolean;
   last_updated?: string;

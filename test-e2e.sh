@@ -31,7 +31,7 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SERVER_DIR="$PROJECT_ROOT/apps/server"
 WEB_DIR="$PROJECT_ROOT/apps/web"
 TEST_OUTPUT_DIR="/tmp/billmanager-test-results"
-TEST_DB_HOST="${TEST_DB_HOST:-192.168.40.242}"
+TEST_DB_HOST="${TEST_DB_HOST:-192.168.40.113}"
 DATABASE_URL="postgresql://billsuser:billspass@${TEST_DB_HOST}:5432/bills_test"
 FLASK_PORT=5001
 VITE_PORT=5173
@@ -127,7 +127,7 @@ import psycopg
 import datetime
 from werkzeug.security import generate_password_hash
 
-_db_host = os.environ.get('TEST_DB_HOST', '192.168.40.242')
+_db_host = os.environ.get('TEST_DB_HOST', '192.168.40.113')
 DATABASE_URL = f"postgresql://billsuser:billspass@{_db_host}:5432/bills_test"
 
 conn = psycopg.connect(DATABASE_URL)

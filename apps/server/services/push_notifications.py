@@ -355,14 +355,22 @@ def process_bill_reminders(days_ahead: List[int] = None) -> Dict[str, int]:
         Dict with counts of notifications sent
     """
     if days_ahead is None:
-        days_ahead = [0, 1, 3, 7]  # Today, tomorrow, 3 days, 1 week
+        days_ahead = [0, 1, 3, 7, 14, 30]  # Common per-bill reminder windows
 
     # Import here to avoid circular imports
     from models import Bill, Database, db
-    from sqlalchemy import func
+
+    def parse_bill_reminder_days(value):
+        if not value:
+            return {0, 1, 3, 7}
+        try:
+            return {int(part.strip()) for part in str(value).split(',') if part.strip()}
+        except ValueError:
+            logger.warning("Invalid reminder_days on bill; using defaults")
+            return {0, 1, 3, 7}
 
     today = datetime.now(timezone.utc).date()
-    stats = {'total_bills': 0, 'notifications_sent': 0}
+    stats = {'total_bills': 0, 'eligible_bills': 0, 'notifications_sent': 0}
 
     for days in days_ahead:
         target_date = (today + timedelta(days=days)).strftime('%Y-%m-%d')
@@ -370,11 +378,15 @@ def process_bill_reminders(days_ahead: List[int] = None) -> Dict[str, int]:
         # Find all non-archived bills due on target date
         bills = Bill.query.filter(
             Bill.archived == False,
-            Bill.due_date == target_date
+            Bill.due_date == target_date,
+            Bill.reminder_enabled == True
         ).all()
 
         for bill in bills:
             stats['total_bills'] += 1
+            if days not in parse_bill_reminder_days(bill.reminder_days):
+                continue
+            stats['eligible_bills'] += 1
 
             # Get database owner to notify
             database = db.session.get(Database, bill.database_id)

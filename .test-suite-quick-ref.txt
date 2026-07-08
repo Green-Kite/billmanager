@@ -54,7 +54,7 @@
 ║    lsof -ti:5173 | xargs kill -9  # Kill Vite                            ║
 ║                                                                          ║
 ║  Database connection failed:                                             ║
-║    psql postgresql://billsuser:billspass@192.168.40.240:5432/bills_test ║
+║    psql postgresql://billsuser:billspass@192.168.40.113:5432/bills_test ║
 ║                                                                          ║
 ║  Review logs:                                                            ║
 ║    cat /tmp/billmanager-test-results/flask.log                           ║

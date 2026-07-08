@@ -21,7 +21,7 @@ import { IconEdit, IconCash, IconPlus, IconFilterOff, IconSearch, IconX, IconDow
 import { notifications } from '@mantine/notifications';
 import { exportBillsToCSV, exportBillsToPDF, printBills } from '../utils/export';
 import type { Bill } from '../api/client';
-import { getAccounts, markSharePaid } from '../api/client';
+import { getAccounts, getCategories, markSharePaid } from '../api/client';
 import { BillIcon } from './BillIcon';
 import type { BillFilter } from '../App';
 
@@ -125,6 +125,7 @@ export function BillList({
 }: BillListProps) {
   // Accounts list for filtering
   const [accounts, setAccounts] = useState<string[]>([]);
+  const [categories, setCategories] = useState<string[]>([]);
 
   // Pagination state
   const [currentPage, setCurrentPage] = useState(1);
@@ -165,6 +166,9 @@ export function BillList({
       getAccounts()
         .then((res) => setAccounts(res))
         .catch((err) => console.error('Failed to fetch accounts:', err));
+      getCategories()
+        .then((res) => setCategories(res))
+        .catch((err) => console.error('Failed to fetch categories:', err));
     }
   }, [isLoggedIn, bills]); // Refetch when bills change
 
@@ -268,6 +272,16 @@ export function BillList({
             size="sm"
             w={180}
           />
+          <Select
+            placeholder="All categories"
+            data={categories}
+            value={filter.category}
+            onChange={(value) => onFilterChange({ ...filter, category: value })}
+            clearable
+            searchable
+            size="sm"
+            w={180}
+          />
         </Group>
         <Group gap="sm">
           {onSearchChange && (
@@ -349,7 +363,10 @@ export function BillList({
                 {filter.dateRange === 'next30Days' && 'Due in next 30 days'}
                 {filter.selectedDate && `Due on ${filter.selectedDate}`}
                 {filter.searchQuery && `Search "${filter.searchQuery}"`}
-                {filter.dateRange === 'all' && !filter.selectedDate && !filter.searchQuery && 'Active filters applied'}
+                {filter.category && `Category "${filter.category}"`}
+                {filter.account && `Account "${filter.account}"`}
+                {filter.type !== 'all' && `${filter.type === 'deposit' ? 'Deposits' : 'Expenses'} only`}
+                {filter.dateRange === 'all' && !filter.selectedDate && !filter.searchQuery && !filter.category && !filter.account && filter.type === 'all' && 'Active filters applied'}
               </Text>
               <Badge size="sm" variant="light" color="blue">{bills.length} result{bills.length !== 1 ? 's' : ''}</Badge>
             </Group>
@@ -439,6 +456,11 @@ export function BillList({
                             {bill.account}
                           </Badge>
                         )}
+                        {bill.category && (
+                          <Badge size="xs" variant="light" color="grape">
+                            {bill.category}
+                          </Badge>
+                        )}
                         {!!bill.archived && (
                           <Badge size="xs" color="gray" variant="filled">
                             Archived
@@ -447,6 +469,11 @@ export function BillList({
                         {!!bill.auto_payment && !bill.archived && (
                           <Badge size="xs" color="green" variant="light">
                             Auto-pay
+                          </Badge>
+                        )}
+                        {bill.reminder_enabled === false && !bill.archived && (
+                          <Badge size="xs" color="gray" variant="light">
+                            Reminders off
                           </Badge>
                         )}
                         {bill.is_shared && bill.share_info?.my_portion_paid && (

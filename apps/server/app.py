@@ -40,6 +40,7 @@ from models import (
     UserInvite,
     UserDevice,
     BillShare,
+    CategoryBudget,
     ShareAuditLog,
     OAuthAccount,
     TwoFAConfig,
@@ -101,6 +102,8 @@ from validation import (
     validate_date,
     validate_frequency,
     validate_bill_name,
+    validate_category,
+    validate_notes,
     validate_database_name,
 )
 
@@ -408,6 +411,192 @@ def resolve_accessible_db_ids():
         accessible_db_ids = [target_db.id]
         db_name_lookup = {target_db.id: target_db.display_name}
     return accessible_db_ids, db_name_lookup
+
+
+def normalize_category(value):
+    """Normalize user-entered categories while preserving readable casing."""
+    if value is None:
+        return None
+    category = str(value).strip()
+    return category or None
+
+
+def normalize_notes(value):
+    """Normalize optional notes fields."""
+    if value is None:
+        return None
+    notes = str(value).strip()
+    return notes or None
+
+
+def parse_bill_due_date(value):
+    """Parse stored bill due dates without raising on legacy invalid values."""
+    if not value:
+        return None
+    try:
+        return datetime.date.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def serialize_settlement_share(share, direction, db_name_lookup=None):
+    """Serialize a shared bill as a settlement ledger row."""
+    bill = share.bill
+    due_date = parse_bill_due_date(bill.due_date)
+    today = datetime.date.today()
+    days_until_due = (due_date - today).days if due_date else None
+
+    if share.recipient_paid_date:
+        due_status = "paid"
+    elif days_until_due is None:
+        due_status = "unknown"
+    elif days_until_due < 0:
+        due_status = "overdue"
+    elif days_until_due == 0:
+        due_status = "due_today"
+    else:
+        due_status = "upcoming"
+
+    counterparty = share.shared_with if direction == "owed_to_me" else share.owner
+    counterparty_name = (
+        counterparty.username
+        if counterparty
+        else share.shared_with_identifier
+    )
+
+    portion = share.calculate_portion()
+    amount = float(portion) if portion is not None else 0.0
+    total_amount = float(bill.amount) if bill.amount is not None else None
+
+    return {
+        "share_id": share.id,
+        "direction": direction,
+        "bill_id": bill.id,
+        "bill_name": bill.name,
+        "bill_icon": bill.icon,
+        "bill_type": bill.type,
+        "database_id": bill.database_id,
+        "database_name": (db_name_lookup or {}).get(bill.database_id),
+        "counterparty_user_id": counterparty.id if counterparty else None,
+        "counterparty_name": counterparty_name,
+        "counterparty_identifier": share.shared_with_identifier,
+        "amount": amount,
+        "total_amount": total_amount,
+        "due_date": bill.due_date,
+        "days_until_due": days_until_due,
+        "due_status": due_status,
+        "split_type": share.split_type,
+        "split_value": float(share.split_value) if share.split_value is not None else None,
+        "paid": share.recipient_paid_date is not None,
+        "paid_date": share.recipient_paid_date.isoformat()
+        if share.recipient_paid_date
+        else None,
+        "created_at": share.created_at.isoformat() if share.created_at else None,
+        "accepted_at": share.accepted_at.isoformat() if share.accepted_at else None,
+    }
+
+
+def resolve_budget_target_database(data):
+    """Resolve a target database for budget writes from X-Database or database_id."""
+    user = db.session.get(User, g.jwt_user_id)
+
+    if data.get("database_id") is not None:
+        target_db = db.session.get(Database, data["database_id"])
+        if not target_db:
+            return None, (jsonify({"success": False, "error": "Target database not found"}), 404)
+        if target_db not in user.accessible_databases:
+            return None, (jsonify({"success": False, "error": "Access denied to target database"}), 403)
+        return target_db, None
+
+    if g.jwt_db_name == "_all_":
+        return None, (
+            jsonify(
+                {
+                    "success": False,
+                    "error": "database_id is required when managing budgets from All Buckets view",
+                }
+            ),
+            400,
+        )
+
+    target_db = Database.query.filter_by(name=g.jwt_db_name).first()
+    if not target_db:
+        return None, (jsonify({"success": False, "error": "Database not found"}), 404)
+    if target_db not in user.accessible_databases:
+        return None, (jsonify({"success": False, "error": "Access denied"}), 403)
+    return target_db, None
+
+
+def serialize_category_budget(budget, db_name_lookup=None):
+    """Convert a CategoryBudget model to API JSON."""
+    return {
+        "id": budget.id,
+        "database_id": budget.database_id,
+        "database_name": (db_name_lookup or {}).get(budget.database_id),
+        "category": budget.category,
+        "monthly_limit": float(budget.monthly_limit),
+        "created_at": budget.created_at.isoformat() if budget.created_at else None,
+        "updated_at": budget.updated_at.isoformat() if budget.updated_at else None,
+    }
+
+
+def parse_month_range(month):
+    """Return string date bounds for a YYYY-MM month."""
+    if not month:
+        today = datetime.date.today()
+        month = f"{today.year}-{today.month:02d}"
+
+    try:
+        year_str, month_str = month.split("-")
+        year = int(year_str)
+        month_number = int(month_str)
+        start = datetime.date(year, month_number, 1)
+    except (ValueError, AttributeError):
+        return None, None, None
+
+    if month_number == 12:
+        end = datetime.date(year + 1, 1, 1)
+    else:
+        end = datetime.date(year, month_number + 1, 1)
+
+    return month, start.isoformat(), end.isoformat()
+
+
+DEFAULT_REMINDER_DAYS = [0, 1, 3, 7]
+ALLOWED_REMINDER_DAYS = [0, 1, 3, 7, 14, 30]
+
+
+def parse_reminder_days(value):
+    """Parse reminder day offsets from API/DB values into a sorted int list."""
+    if value is None or value == "":
+        return DEFAULT_REMINDER_DAYS.copy()
+
+    if isinstance(value, str):
+        raw_values = [part.strip() for part in value.split(",") if part.strip()]
+    elif isinstance(value, list):
+        raw_values = value
+    else:
+        raw_values = [value]
+
+    days = []
+    for raw_value in raw_values:
+        try:
+            day = int(raw_value)
+        except (TypeError, ValueError):
+            raise ValueError("Reminder days must be whole numbers")
+        if day not in ALLOWED_REMINDER_DAYS:
+            raise ValueError(
+                f"Reminder days must be one of: {', '.join(str(d) for d in ALLOWED_REMINDER_DAYS)}"
+            )
+        if day not in days:
+            days.append(day)
+
+    return sorted(days)
+
+
+def serialize_reminder_days(value):
+    """Serialize reminder day offsets for storage."""
+    return ",".join(str(day) for day in parse_reminder_days(value))
 
 
 def jwt_required(f):
@@ -755,6 +944,69 @@ def calculate_next_due_date(
                 days=7 - current_weekday + min(days_of_week)
             )
     return current_date + timedelta(days=30)
+
+
+def parse_frequency_config(value):
+    """Parse a bill frequency config stored as JSON text or a dict."""
+    if isinstance(value, dict):
+        return value
+    if not value:
+        return {}
+    try:
+        parsed = json.loads(value)
+        return parsed if isinstance(parsed, dict) else {}
+    except (TypeError, ValueError):
+        return {}
+
+
+def forecast_bill_occurrences(bill, amount, start_date, end_date, source, db_name, share=None):
+    """Generate projected bill occurrences inside a date range."""
+    due_date = parse_bill_due_date(bill.due_date)
+    if not due_date:
+        return []
+
+    frequency_config = parse_frequency_config(bill.frequency_config)
+    guard = 0
+    while due_date < start_date and guard < 250:
+        next_due = calculate_next_due_date(
+            due_date, bill.frequency, bill.frequency_type, frequency_config
+        )
+        if next_due <= due_date:
+            break
+        due_date = next_due
+        guard += 1
+
+    occurrences = []
+    guard = 0
+    while due_date <= end_date and guard < 250:
+        signed_amount = amount if bill.type == "deposit" else -amount
+        occurrences.append(
+            {
+                "date": due_date.isoformat(),
+                "bill_id": bill.id,
+                "bill_name": bill.name,
+                "bill_icon": bill.icon,
+                "bill_type": bill.type,
+                "database_id": bill.database_id,
+                "database_name": db_name,
+                "source": source,
+                "share_id": share.id if share else None,
+                "counterparty_name": share.owner.username if share and share.owner else None,
+                "amount": round(abs(amount), 2),
+                "signed_amount": round(signed_amount, 2),
+                "category": bill.category,
+                "account": bill.account,
+                "is_variable": bool(bill.is_variable),
+            }
+        )
+        next_due = calculate_next_due_date(
+            due_date, bill.frequency, bill.frequency_type, frequency_config
+        )
+        if next_due <= due_date:
+            break
+        due_date = next_due
+        guard += 1
+    return occurrences
 
 
 # --- API Routes ---
@@ -2524,7 +2776,7 @@ def process_auto_payments():
 def get_version():
     return jsonify(
         {
-            "version": "4.0.2",
+            "version": "4.1.1",
             "license": "O'Saasy",
             "license_url": "https://osaasy.dev/",
             "features": [
@@ -2534,6 +2786,7 @@ def get_version():
                 "row_tenancy",
                 "user_invites",
                 "shared_bills",
+                "self_hosted_oidc",
             ],
         }
     )
@@ -3662,7 +3915,10 @@ def jwt_get_bills():
             "icon": bill.icon,
             "type": bill.type,
             "account": bill.account,
+            "category": bill.category,
             "notes": bill.notes,
+            "reminder_enabled": bill.reminder_enabled,
+            "reminder_days": parse_reminder_days(bill.reminder_days),
             "archived": bill.archived,
             "is_shared": False,
             "share_count": share_counts.get(bill.id, 0),
@@ -3709,7 +3965,10 @@ def jwt_get_bills():
             "icon": bill.icon,
             "type": bill.type,
             "account": bill.account,
+            "category": bill.category,
             "notes": bill.notes,
+            "reminder_enabled": bill.reminder_enabled,
+            "reminder_days": parse_reminder_days(bill.reminder_days),
             "archived": bill.archived,
             "is_shared": True,
             "share_info": {
@@ -3801,6 +4060,21 @@ def jwt_create_bill():
     if not is_valid:
         return jsonify({"success": False, "error": error}), 400
 
+    category = normalize_category(data.get("category"))
+    is_valid, error = validate_category(category)
+    if not is_valid:
+        return jsonify({"success": False, "error": error}), 400
+
+    notes = normalize_notes(data.get("notes"))
+    is_valid, error = validate_notes(notes)
+    if not is_valid:
+        return jsonify({"success": False, "error": error}), 400
+
+    try:
+        reminder_days = serialize_reminder_days(data.get("reminder_days"))
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+
     new_bill = Bill(
         database_id=target_db.id,
         name=data["name"],
@@ -3814,7 +4088,10 @@ def jwt_create_bill():
         icon=data.get("icon", "payment"),
         type=data.get("type", "expense"),
         account=data.get("account"),
-        notes=data.get("notes"),
+        category=category,
+        notes=notes,
+        reminder_enabled=data.get("reminder_enabled", True),
+        reminder_days=reminder_days,
         archived=False,
     )
     db.session.add(new_bill)
@@ -3852,7 +4129,10 @@ def jwt_get_bill(bill_id):
         "icon": bill.icon,
         "type": bill.type,
         "account": bill.account,
+        "category": bill.category,
         "notes": bill.notes,
+        "reminder_enabled": bill.reminder_enabled,
+        "reminder_days": parse_reminder_days(bill.reminder_days),
         "archived": bill.archived,
     }
     if bill.is_variable:
@@ -3928,8 +4208,25 @@ def jwt_update_bill(bill_id):
         bill.type = data["type"]
     if "account" in data:
         bill.account = data["account"]
+    if "category" in data:
+        category = normalize_category(data["category"])
+        is_valid, error = validate_category(category)
+        if not is_valid:
+            return jsonify({"success": False, "error": error}), 400
+        bill.category = category
     if "notes" in data:
-        bill.notes = data["notes"]
+        notes = normalize_notes(data["notes"])
+        is_valid, error = validate_notes(notes)
+        if not is_valid:
+            return jsonify({"success": False, "error": error}), 400
+        bill.notes = notes
+    if "reminder_enabled" in data:
+        bill.reminder_enabled = bool(data["reminder_enabled"])
+    if "reminder_days" in data:
+        try:
+            bill.reminder_days = serialize_reminder_days(data["reminder_days"])
+        except ValueError as exc:
+            return jsonify({"success": False, "error": str(exc)}), 400
 
     db.session.commit()
     return jsonify({"success": True, "data": {"message": "Bill updated"}})
@@ -4494,6 +4791,136 @@ def jwt_revoke_share(share_id):
     return jsonify({"success": True, "data": {"message": "Share revoked"}})
 
 
+@api_v2_bp.route("/settlements", methods=["GET"])
+@limiter.limit("60 per minute")
+@jwt_required
+def jwt_get_settlements():
+    """Get shared-bill settlement balances for the current user."""
+    if not g.jwt_db_name:
+        return jsonify({"success": False, "error": "X-Database header required"}), 400
+
+    from sqlalchemy.orm import joinedload
+
+    resolved = resolve_accessible_db_ids()
+    if not isinstance(resolved[0], list):
+        return resolved
+    accessible_db_ids, db_name_lookup = resolved
+
+    owned_shares = (
+        BillShare.query.join(Bill)
+        .filter(
+            BillShare.owner_user_id == g.jwt_user_id,
+            BillShare.status == "accepted",
+            Bill.database_id.in_(accessible_db_ids),
+            Bill.archived == False,
+        )
+        .options(
+            joinedload(BillShare.bill),
+            joinedload(BillShare.owner),
+            joinedload(BillShare.shared_with),
+        )
+        .all()
+    )
+
+    received_shares = (
+        BillShare.query.join(Bill)
+        .filter(
+            BillShare.shared_with_user_id == g.jwt_user_id,
+            BillShare.status == "accepted",
+            Bill.archived == False,
+        )
+        .options(
+            joinedload(BillShare.bill),
+            joinedload(BillShare.owner),
+            joinedload(BillShare.shared_with),
+        )
+        .all()
+    )
+
+    owed_to_me = []
+    i_owe = []
+    settled = []
+    people = {}
+
+    def track_person(item):
+        name = item["counterparty_name"] or "Unknown"
+        if name not in people:
+            people[name] = {
+                "counterparty_name": name,
+                "owed_to_me": 0.0,
+                "i_owe": 0.0,
+                "net": 0.0,
+                "open_count": 0,
+            }
+        if item["paid"]:
+            return
+        people[name][item["direction"]] += item["amount"]
+        people[name]["net"] = people[name]["owed_to_me"] - people[name]["i_owe"]
+        people[name]["open_count"] += 1
+
+    for share in owned_shares:
+        item = serialize_settlement_share(share, "owed_to_me", db_name_lookup)
+        if item["paid"]:
+            settled.append(item)
+        else:
+            owed_to_me.append(item)
+        track_person(item)
+
+    for share in received_shares:
+        shared_bill_db = db.session.get(Database, share.bill.database_id)
+        received_db_lookup = {
+            share.bill.database_id: shared_bill_db.display_name
+            if shared_bill_db
+            else "Unknown"
+        }
+        item = serialize_settlement_share(share, "i_owe", received_db_lookup)
+        if item["paid"]:
+            settled.append(item)
+        else:
+            i_owe.append(item)
+        track_person(item)
+
+    def open_sort_key(item):
+        due = parse_bill_due_date(item["due_date"])
+        return (due or datetime.date.max, item["counterparty_name"], item["bill_name"])
+
+    owed_to_me.sort(key=open_sort_key)
+    i_owe.sort(key=open_sort_key)
+    settled.sort(key=lambda item: item["paid_date"] or "", reverse=True)
+
+    total_owed_to_me = round(sum(item["amount"] for item in owed_to_me), 2)
+    total_i_owe = round(sum(item["amount"] for item in i_owe), 2)
+    overdue_owed_to_me = sum(1 for item in owed_to_me if item["due_status"] == "overdue")
+    overdue_i_owe = sum(1 for item in i_owe if item["due_status"] == "overdue")
+
+    people_summary = sorted(
+        people.values(),
+        key=lambda item: (abs(item["net"]), item["counterparty_name"]),
+        reverse=True,
+    )
+
+    return jsonify(
+        {
+            "success": True,
+            "data": {
+                "summary": {
+                    "owed_to_me": total_owed_to_me,
+                    "i_owe": total_i_owe,
+                    "net_balance": round(total_owed_to_me - total_i_owe, 2),
+                    "open_count": len(owed_to_me) + len(i_owe),
+                    "settled_count": len(settled),
+                    "overdue_owed_to_me": overdue_owed_to_me,
+                    "overdue_i_owe": overdue_i_owe,
+                },
+                "owed_to_me": owed_to_me,
+                "i_owe": i_owe,
+                "settled": settled[:25],
+                "people": people_summary,
+            },
+        }
+    )
+
+
 @api_v2_bp.route("/shared-bills", methods=["GET"])
 @limiter.limit("60 per minute")
 @jwt_required
@@ -4979,6 +5406,504 @@ def jwt_get_accounts():
     result = [a[0] for a in accounts if a[0]]
 
     return jsonify({"success": True, "data": result})
+
+
+@api_v2_bp.route("/categories", methods=["GET"])
+@limiter.limit("60 per minute")
+@jwt_required
+def jwt_get_categories():
+    """Get distinct bill and budget categories for the selected bill group(s)."""
+    if not g.jwt_db_name:
+        return jsonify({"success": False, "error": "X-Database header required"}), 400
+
+    result = resolve_accessible_db_ids()
+    if not isinstance(result[0], list):
+        return result
+    accessible_db_ids, _ = result
+
+    bill_categories = (
+        db.session.query(Bill.category)
+        .filter(
+            Bill.database_id.in_(accessible_db_ids),
+            Bill.category != None,
+            Bill.category != "",
+        )
+        .distinct()
+        .all()
+    )
+    budget_categories = (
+        db.session.query(CategoryBudget.category)
+        .filter(CategoryBudget.database_id.in_(accessible_db_ids))
+        .distinct()
+        .all()
+    )
+
+    categories = sorted({row[0] for row in bill_categories + budget_categories if row[0]})
+    return jsonify({"success": True, "data": categories})
+
+
+@api_v2_bp.route("/budgets", methods=["GET"])
+@limiter.limit("60 per minute")
+@jwt_required
+def jwt_get_budgets():
+    """Get category budgets for the selected bill group(s)."""
+    if not g.jwt_db_name:
+        return jsonify({"success": False, "error": "X-Database header required"}), 400
+
+    result = resolve_accessible_db_ids()
+    if not isinstance(result[0], list):
+        return result
+    accessible_db_ids, db_name_lookup = result
+
+    budgets = (
+        CategoryBudget.query.filter(CategoryBudget.database_id.in_(accessible_db_ids))
+        .order_by(CategoryBudget.category)
+        .all()
+    )
+
+    return jsonify(
+        {
+            "success": True,
+            "data": [serialize_category_budget(budget, db_name_lookup) for budget in budgets],
+        }
+    )
+
+
+@api_v2_bp.route("/budgets", methods=["POST"])
+@limiter.limit("30 per minute")
+@jwt_required
+def jwt_create_budget():
+    """Create a monthly category budget."""
+    if not g.jwt_db_name:
+        return jsonify({"success": False, "error": "X-Database header required"}), 400
+
+    data = request.get_json(force=True, silent=True)
+    if not data:
+        return jsonify({"success": False, "error": "Invalid JSON body"}), 400
+
+    target_db, error_response = resolve_budget_target_database(data)
+    if error_response:
+        return error_response
+
+    category = normalize_category(data.get("category"))
+    if not category:
+        return jsonify({"success": False, "error": "Category is required"}), 400
+    is_valid, error = validate_category(category)
+    if not is_valid:
+        return jsonify({"success": False, "error": error}), 400
+
+    if data.get("monthly_limit") is None:
+        return jsonify({"success": False, "error": "Monthly budget is required"}), 400
+
+    is_valid, error = validate_amount(data.get("monthly_limit"))
+    if not is_valid:
+        return jsonify({"success": False, "error": error}), 400
+
+    budget = CategoryBudget(
+        database_id=target_db.id,
+        category=category,
+        monthly_limit=float(data["monthly_limit"]),
+    )
+    db.session.add(budget)
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        return jsonify({"success": False, "error": "Budget already exists for this category"}), 409
+
+    return jsonify({"success": True, "data": serialize_category_budget(budget)}), 201
+
+
+@api_v2_bp.route("/budgets/<int:budget_id>", methods=["PUT"])
+@limiter.limit("30 per minute")
+@jwt_required
+def jwt_update_budget(budget_id):
+    """Update a monthly category budget."""
+    if not g.jwt_db_name:
+        return jsonify({"success": False, "error": "X-Database header required"}), 400
+
+    budget = db.get_or_404(CategoryBudget, budget_id)
+    result = resolve_accessible_db_ids()
+    if not isinstance(result[0], list):
+        return result
+    accessible_db_ids, _ = result
+    if budget.database_id not in accessible_db_ids:
+        return jsonify({"success": False, "error": "Access denied"}), 403
+
+    data = request.get_json(force=True, silent=True)
+    if not data:
+        return jsonify({"success": False, "error": "Invalid JSON body"}), 400
+
+    if "category" in data:
+        category = normalize_category(data["category"])
+        if not category:
+            return jsonify({"success": False, "error": "Category is required"}), 400
+        is_valid, error = validate_category(category)
+        if not is_valid:
+            return jsonify({"success": False, "error": error}), 400
+        budget.category = category
+
+    if "monthly_limit" in data:
+        if data["monthly_limit"] is None:
+            return jsonify({"success": False, "error": "Monthly budget is required"}), 400
+        is_valid, error = validate_amount(data["monthly_limit"])
+        if not is_valid:
+            return jsonify({"success": False, "error": error}), 400
+        budget.monthly_limit = float(data["monthly_limit"])
+
+    if "database_id" in data and data["database_id"] != budget.database_id:
+        target_db, error_response = resolve_budget_target_database(data)
+        if error_response:
+            return error_response
+        budget.database_id = target_db.id
+
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        return jsonify({"success": False, "error": "Budget already exists for this category"}), 409
+
+    return jsonify({"success": True, "data": serialize_category_budget(budget)})
+
+
+@api_v2_bp.route("/budgets/<int:budget_id>", methods=["DELETE"])
+@limiter.limit("30 per minute")
+@jwt_required
+def jwt_delete_budget(budget_id):
+    """Delete a monthly category budget."""
+    if not g.jwt_db_name:
+        return jsonify({"success": False, "error": "X-Database header required"}), 400
+
+    budget = db.get_or_404(CategoryBudget, budget_id)
+    result = resolve_accessible_db_ids()
+    if not isinstance(result[0], list):
+        return result
+    accessible_db_ids, _ = result
+    if budget.database_id not in accessible_db_ids:
+        return jsonify({"success": False, "error": "Access denied"}), 403
+
+    db.session.delete(budget)
+    db.session.commit()
+    return jsonify({"success": True, "data": {"message": "Budget deleted"}})
+
+
+@api_v2_bp.route("/budgets/summary", methods=["GET"])
+@limiter.limit("60 per minute")
+@jwt_required
+def jwt_get_budget_summary():
+    """Get spending versus monthly category budgets for a month."""
+    if not g.jwt_db_name:
+        return jsonify({"success": False, "error": "X-Database header required"}), 400
+
+    result = resolve_accessible_db_ids()
+    if not isinstance(result[0], list):
+        return result
+    accessible_db_ids, db_name_lookup = result
+
+    month, start_date, end_date = parse_month_range(request.args.get("month"))
+    if not month:
+        return jsonify({"success": False, "error": "Month must be in YYYY-MM format"}), 400
+
+    category_expr = func.coalesce(func.nullif(Bill.category, ""), "Uncategorized")
+    spending_rows = (
+        db.session.query(
+            Bill.database_id,
+            category_expr.label("category"),
+            func.sum(Payment.amount).label("spent"),
+        )
+        .join(Payment)
+        .filter(
+            Bill.database_id.in_(accessible_db_ids),
+            Payment.share_id == None,
+            Bill.type != "deposit",
+            Payment.payment_date >= start_date,
+            Payment.payment_date < end_date,
+        )
+        .group_by(Bill.database_id, category_expr)
+        .all()
+    )
+    spent_lookup = {
+        (row.database_id, row.category): float(row.spent or 0) for row in spending_rows
+    }
+
+    budgets = (
+        CategoryBudget.query.filter(CategoryBudget.database_id.in_(accessible_db_ids))
+        .order_by(CategoryBudget.category)
+        .all()
+    )
+
+    summary = []
+    budget_keys = set()
+    for budget in budgets:
+        key = (budget.database_id, budget.category)
+        budget_keys.add(key)
+        spent = spent_lookup.get(key, 0)
+        monthly_limit = float(budget.monthly_limit)
+        remaining = monthly_limit - spent
+        summary.append(
+            {
+                "budget_id": budget.id,
+                "database_id": budget.database_id,
+                "database_name": db_name_lookup.get(budget.database_id, "Unknown"),
+                "category": budget.category,
+                "monthly_limit": monthly_limit,
+                "spent": spent,
+                "remaining": remaining,
+                "percent_used": (spent / monthly_limit * 100) if monthly_limit > 0 else 0,
+                "over_budget": spent > monthly_limit,
+                "month": month,
+            }
+        )
+
+    for key, spent in spent_lookup.items():
+        if key in budget_keys:
+            continue
+        database_id, category = key
+        summary.append(
+            {
+                "budget_id": None,
+                "database_id": database_id,
+                "database_name": db_name_lookup.get(database_id, "Unknown"),
+                "category": category,
+                "monthly_limit": None,
+                "spent": spent,
+                "remaining": None,
+                "percent_used": None,
+                "over_budget": False,
+                "month": month,
+            }
+        )
+
+    summary.sort(
+        key=lambda item: (
+            item["monthly_limit"] is None,
+            item["database_name"],
+            item["category"].lower(),
+        )
+    )
+
+    return jsonify({"success": True, "data": summary})
+
+
+@api_v2_bp.route("/stats/by-category", methods=["GET"])
+@limiter.limit("60 per minute")
+@jwt_required
+def jwt_get_stats_by_category():
+    """Get payment totals grouped by category."""
+    if not g.jwt_db_name:
+        return jsonify({"success": False, "error": "X-Database header required"}), 400
+
+    result = resolve_accessible_db_ids()
+    if not isinstance(result[0], list):
+        return result
+    accessible_db_ids, _ = result
+
+    category_expr = func.coalesce(func.nullif(Bill.category, ""), "Uncategorized")
+    rows = (
+        db.session.query(category_expr.label("category"), func.sum(Payment.amount), Bill.type)
+        .join(Payment)
+        .filter(Bill.database_id.in_(accessible_db_ids), Payment.share_id == None)
+        .group_by(category_expr, Bill.type)
+        .all()
+    )
+
+    by_category = {}
+    for row in rows:
+        category = row[0] or "Uncategorized"
+        if category not in by_category:
+            by_category[category] = {"expenses": 0, "deposits": 0, "total": 0}
+        if row[2] == "deposit":
+            by_category[category]["deposits"] += float(row[1])
+        else:
+            by_category[category]["expenses"] += float(row[1])
+        by_category[category]["total"] = (
+            by_category[category]["expenses"] - by_category[category]["deposits"]
+        )
+
+    data = [
+        {"category": category, **values}
+        for category, values in sorted(
+            by_category.items(), key=lambda item: item[1]["expenses"], reverse=True
+        )
+    ]
+    return jsonify({"success": True, "data": data})
+
+
+@api_v2_bp.route("/forecast/cash-flow", methods=["GET"])
+@limiter.limit("60 per minute")
+@jwt_required
+def jwt_get_cash_flow_forecast():
+    """Project cash balance using upcoming bills, deposits, and shared payables."""
+    if not g.jwt_db_name:
+        return jsonify({"success": False, "error": "X-Database header required"}), 400
+
+    try:
+        days = int(request.args.get("days", 60))
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "days must be a number"}), 400
+    if days < 1 or days > 365:
+        return jsonify({"success": False, "error": "days must be between 1 and 365"}), 400
+
+    try:
+        starting_balance = float(request.args.get("starting_balance", 0))
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "starting_balance must be a number"}), 400
+    if starting_balance != starting_balance:
+        return jsonify({"success": False, "error": "starting_balance must be a number"}), 400
+
+    resolved = resolve_accessible_db_ids()
+    if not isinstance(resolved[0], list):
+        return resolved
+    accessible_db_ids, db_name_lookup = resolved
+
+    start_date = datetime.date.today()
+    end_date = start_date + timedelta(days=days)
+
+    owned_bills = (
+        Bill.query.filter(
+            Bill.database_id.in_(accessible_db_ids),
+            Bill.archived == False,
+        )
+        .order_by(Bill.due_date, Bill.name)
+        .all()
+    )
+
+    received_shares = (
+        BillShare.query.join(Bill)
+        .filter(
+            BillShare.shared_with_user_id == g.jwt_user_id,
+            BillShare.status == "accepted",
+            Bill.archived == False,
+        )
+        .all()
+    )
+
+    bill_ids = {bill.id for bill in owned_bills}
+    bill_ids.update(share.bill_id for share in received_shares)
+    avg_amounts = {}
+    if bill_ids:
+        avg_rows = (
+            db.session.query(Payment.bill_id, func.avg(Payment.amount).label("avg_amount"))
+            .filter(Payment.bill_id.in_(bill_ids))
+            .group_by(Payment.bill_id)
+            .all()
+        )
+        avg_amounts = {row.bill_id: float(row.avg_amount or 0) for row in avg_rows}
+
+    occurrences = []
+
+    for bill in owned_bills:
+        amount = avg_amounts.get(bill.id, 0) if bill.is_variable else (bill.amount or 0)
+        if amount <= 0:
+            continue
+        occurrences.extend(
+            forecast_bill_occurrences(
+                bill,
+                float(amount),
+                start_date,
+                end_date,
+                "bill",
+                db_name_lookup.get(bill.database_id, "Unknown"),
+            )
+        )
+
+    for share in received_shares:
+        amount = share.calculate_portion()
+        if amount is None:
+            amount = avg_amounts.get(share.bill_id, 0) if share.bill.is_variable else (share.bill.amount or 0)
+        amount = float(amount or 0)
+        if amount <= 0:
+            continue
+        shared_bill_db = db.session.get(Database, share.bill.database_id)
+        occurrences.extend(
+            forecast_bill_occurrences(
+                share.bill,
+                amount,
+                start_date,
+                end_date,
+                "shared",
+                shared_bill_db.display_name if shared_bill_db else "Unknown",
+                share=share,
+            )
+        )
+
+    occurrences.sort(
+        key=lambda item: (
+            item["date"],
+            0 if item["signed_amount"] > 0 else 1,
+            item["bill_name"].lower(),
+        )
+    )
+
+    balance = starting_balance
+    for item in occurrences:
+        balance += item["signed_amount"]
+        item["balance_after"] = round(balance, 2)
+
+    daily_net = {}
+    for item in occurrences:
+        daily_net[item["date"]] = daily_net.get(item["date"], 0) + item["signed_amount"]
+
+    daily = []
+    running_balance = starting_balance
+    lowest_balance = starting_balance
+    lowest_balance_date = start_date.isoformat()
+    first_negative_date = None
+    for offset in range(days + 1):
+        day = start_date + timedelta(days=offset)
+        day_key = day.isoformat()
+        net_change = daily_net.get(day_key, 0)
+        running_balance += net_change
+        if running_balance < lowest_balance:
+            lowest_balance = running_balance
+            lowest_balance_date = day_key
+        if running_balance < 0 and first_negative_date is None:
+            first_negative_date = day_key
+        daily.append(
+            {
+                "date": day_key,
+                "balance": round(running_balance, 2),
+                "net_change": round(net_change, 2),
+            }
+        )
+
+    total_income = round(
+        sum(item["signed_amount"] for item in occurrences if item["signed_amount"] > 0), 2
+    )
+    total_expenses = round(
+        abs(sum(item["signed_amount"] for item in occurrences if item["signed_amount"] < 0)), 2
+    )
+    ending_balance = round(daily[-1]["balance"] if daily else starting_balance, 2)
+    runway_days = None
+    if first_negative_date:
+        runway_days = (
+            datetime.date.fromisoformat(first_negative_date) - start_date
+        ).days
+
+    return jsonify(
+        {
+            "success": True,
+            "data": {
+                "summary": {
+                    "start_date": start_date.isoformat(),
+                    "end_date": end_date.isoformat(),
+                    "days": days,
+                    "starting_balance": round(starting_balance, 2),
+                    "ending_balance": ending_balance,
+                    "lowest_balance": round(lowest_balance, 2),
+                    "lowest_balance_date": lowest_balance_date,
+                    "total_income": total_income,
+                    "total_expenses": total_expenses,
+                    "net_change": round(total_income - total_expenses, 2),
+                    "runway_days": runway_days,
+                    "first_negative_date": first_negative_date,
+                    "occurrence_count": len(occurrences),
+                },
+                "daily": daily,
+                "occurrences": occurrences[:100],
+            },
+        }
+    )
 
 
 @api_v2_bp.route("/stats/monthly", methods=["GET"])
@@ -5536,6 +6461,23 @@ def _generate_apple_client_secret():
         return None
 
 
+def _resolve_token_auth_method(provider, cfg, metadata):
+    """Resolve the token endpoint client auth method for an OAuth provider."""
+    configured = cfg.get("token_auth_method") or "client_secret_post"
+    if configured != "auto":
+        return configured
+
+    supported = metadata.get("token_endpoint_auth_methods_supported") or []
+    if cfg.get("client_secret") and "client_secret_basic" in supported:
+        return "client_secret_basic"
+    if cfg.get("client_secret") and "client_secret_post" in supported:
+        return "client_secret_post"
+    if "none" in supported:
+        return "none"
+
+    return "client_secret_post" if cfg.get("client_secret") else "none"
+
+
 def _resolve_oauth_user(provider, provider_user_id, email, profile_data=None):
     """Resolve or create a user from OIDC claims.
 
@@ -5803,6 +6745,7 @@ def oauth_callback(provider):
         "client_id": cfg["client_id"],
         "code_verifier": code_verifier,
     }
+    token_request_kwargs = {"data": token_data, "timeout": 10}
 
     if provider == "apple":
         apple_client_secret = _generate_apple_client_secret()
@@ -5811,11 +6754,30 @@ def oauth_callback(provider):
                 {"success": False, "error": "Apple OAuth is not fully configured"}
             ), 502
         token_data["client_secret"] = apple_client_secret
-    elif cfg.get("client_secret"):
-        token_data["client_secret"] = cfg["client_secret"]
+    else:
+        token_auth_method = _resolve_token_auth_method(provider, cfg, metadata)
+        if token_auth_method == "client_secret_basic":
+            if not cfg.get("client_secret"):
+                return jsonify(
+                    {
+                        "success": False,
+                        "error": "Provider client secret is required for client_secret_basic",
+                    }
+                ), 502
+            token_data.pop("client_id", None)
+            token_request_kwargs["auth"] = (cfg["client_id"], cfg["client_secret"])
+        elif token_auth_method == "client_secret_post":
+            if cfg.get("client_secret"):
+                token_data["client_secret"] = cfg["client_secret"]
+        elif token_auth_method == "none":
+            pass
+        else:
+            return jsonify(
+                {"success": False, "error": "Unsupported token auth method"}
+            ), 502
 
     try:
-        token_resp = http_requests.post(token_endpoint, data=token_data, timeout=10)
+        token_resp = http_requests.post(token_endpoint, **token_request_kwargs)
         token_resp.raise_for_status()
         token_json = token_resp.json()
     except Exception as e:
@@ -7704,7 +8666,7 @@ def jwt_get_version():
         {
             "success": True,
             "data": {
-                "version": "4.0.2",
+                "version": "4.1.1",
                 "api_version": "v2",
                 "license": "O'Saasy",
                 "license_url": "https://osaasy.dev/",
@@ -7722,6 +8684,7 @@ def jwt_get_version():
                     "conflict_resolution",
                     "push_notifications",
                     "shared_bills",
+                    "self_hosted_oidc",
                 ],
             },
         }
@@ -7732,6 +8695,97 @@ def jwt_get_version():
 def get_config():
     """Return public configuration for frontend."""
     return jsonify({"success": True, "data": get_public_config()})
+
+
+@api_v2_bp.route("/alerts/upcoming", methods=["GET"])
+@limiter.limit("60 per minute")
+@jwt_required
+def jwt_get_upcoming_alerts():
+    """Get reminder-aware bill alerts for the selected bill group(s)."""
+    if not g.jwt_db_name:
+        return jsonify({"success": False, "error": "X-Database header required"}), 400
+
+    result = resolve_accessible_db_ids()
+    if not isinstance(result[0], list):
+        return result
+    accessible_db_ids, db_name_lookup = result
+
+    today = datetime.date.today()
+    horizon_days = int(request.args.get("horizon_days", 30))
+    horizon_days = max(1, min(horizon_days, 90))
+    end_date = today + datetime.timedelta(days=horizon_days)
+
+    bills = (
+        Bill.query.filter(
+            Bill.database_id.in_(accessible_db_ids),
+            Bill.archived == False,
+            Bill.due_date <= end_date.isoformat(),
+        )
+        .order_by(Bill.due_date)
+        .all()
+    )
+
+    severity_rank = {"critical": 0, "warning": 1, "info": 2}
+    alerts = []
+
+    for bill in bills:
+        try:
+            due_date = datetime.date.fromisoformat(bill.due_date)
+        except ValueError:
+            continue
+
+        days_until_due = (due_date - today).days
+        amount = bill.amount
+
+        try:
+            reminder_days = parse_reminder_days(bill.reminder_days)
+        except ValueError:
+            reminder_days = DEFAULT_REMINDER_DAYS
+
+        alert = None
+        if bill.type != "deposit" and days_until_due < 0:
+            alert = {
+                "type": "overdue",
+                "severity": "critical",
+                "title": f"{bill.name} is overdue",
+                "message": f"Due {abs(days_until_due)} day(s) ago",
+            }
+        elif days_until_due == 0:
+            alert = {
+                "type": "due_today" if bill.type != "deposit" else "deposit_today",
+                "severity": "warning" if bill.type != "deposit" else "info",
+                "title": f"{bill.name} is due today" if bill.type != "deposit" else f"{bill.name} is expected today",
+                "message": "Record payment when complete" if bill.type != "deposit" else "Expected deposit is due today",
+            }
+        elif bill.reminder_enabled and days_until_due in reminder_days:
+            alert = {
+                "type": "upcoming" if bill.type != "deposit" else "deposit_expected",
+                "severity": "warning" if days_until_due <= 1 and bill.type != "deposit" else "info",
+                "title": f"{bill.name} due in {days_until_due} day(s)" if bill.type != "deposit" else f"{bill.name} expected in {days_until_due} day(s)",
+                "message": "Upcoming reminder window",
+            }
+
+        if not alert:
+            continue
+
+        alert.update(
+            {
+                "bill_id": bill.id,
+                "bill_name": bill.name,
+                "bill_type": bill.type,
+                "amount": float(amount) if amount is not None else None,
+                "due_date": bill.due_date,
+                "days_until_due": days_until_due,
+                "database_id": bill.database_id,
+                "database_name": db_name_lookup.get(bill.database_id, "Unknown"),
+                "category": bill.category,
+                "account": bill.account,
+            }
+        )
+        alerts.append(alert)
+
+    alerts.sort(key=lambda item: (severity_rank[item["severity"]], item["days_until_due"]))
+    return jsonify({"success": True, "data": alerts})
 
 
 @api_v2_bp.route("/notifications/config", methods=["GET"])
@@ -7747,6 +8801,7 @@ def get_notification_config():
                 "push_enabled": is_push_enabled(),
                 "supported_types": [
                     "bill_reminder",
+                    "bill_alert",
                     "payment_confirmed",
                     "account_activity",
                     "security_alert",
@@ -7796,11 +8851,11 @@ def trigger_bill_reminders():
     Trigger bill reminder notifications (admin only).
 
     This endpoint is meant to be called by a cron job or scheduler.
-    It sends reminders for bills due today, tomorrow, in 3 days, and in 7 days.
+    It sends reminders for bills whose per-bill reminder windows match.
 
     Request body (optional):
     {
-        "days_ahead": [0, 1, 3, 7]  // Days to check (default shown)
+        "days_ahead": [0, 1, 3, 7, 14, 30]  // Days to check (default shown)
     }
     """
     from services.push_notifications import process_bill_reminders, is_push_enabled
@@ -8148,7 +9203,10 @@ def jwt_sync_push():
                             "icon": bill.icon,
                             "type": bill.type,
                             "account": bill.account,
+                            "category": bill.category,
                             "notes": bill.notes,
+                            "reminder_enabled": bill.reminder_enabled,
+                            "reminder_days": parse_reminder_days(bill.reminder_days),
                             "archived": bill.archived,
                             "last_updated": bill.last_updated.isoformat()
                             if bill.last_updated
@@ -8157,6 +9215,14 @@ def jwt_sync_push():
                     }
                 )
                 continue
+
+            next_reminder_days = None
+            if "reminder_days" in bill_data:
+                try:
+                    next_reminder_days = serialize_reminder_days(bill_data["reminder_days"])
+                except ValueError:
+                    rejected_bills.append({"id": bill_id, "reason": "invalid_reminder_days"})
+                    continue
 
             # Client wins - apply changes
             if "name" in bill_data:
@@ -8181,8 +9247,14 @@ def jwt_sync_push():
                 bill.type = bill_data["type"]
             if "account" in bill_data:
                 bill.account = bill_data["account"]
+            if "category" in bill_data:
+                bill.category = normalize_category(bill_data["category"])
             if "notes" in bill_data:
-                bill.notes = bill_data["notes"]
+                bill.notes = normalize_notes(bill_data["notes"])
+            if "reminder_enabled" in bill_data:
+                bill.reminder_enabled = bool(bill_data["reminder_enabled"])
+            if next_reminder_days is not None:
+                bill.reminder_days = next_reminder_days
 
             accepted_bills.append({"id": bill.id, "action": "updated"})
         else:
@@ -8190,6 +9262,14 @@ def jwt_sync_push():
             if not bill_data.get("name") or not bill_data.get("next_due"):
                 rejected_bills.append(
                     {"id": None, "reason": "missing_required_fields", "data": bill_data}
+                )
+                continue
+
+            try:
+                reminder_days = serialize_reminder_days(bill_data.get("reminder_days"))
+            except ValueError:
+                rejected_bills.append(
+                    {"id": None, "reason": "invalid_reminder_days", "data": bill_data}
                 )
                 continue
 
@@ -8206,7 +9286,10 @@ def jwt_sync_push():
                 icon=bill_data.get("icon", "payment"),
                 type=bill_data.get("type", "expense"),
                 account=bill_data.get("account"),
-                notes=bill_data.get("notes"),
+                category=normalize_category(bill_data.get("category")),
+                notes=normalize_notes(bill_data.get("notes")),
+                reminder_enabled=bill_data.get("reminder_enabled", True),
+                reminder_days=reminder_days,
                 archived=False,
             )
             db.session.add(new_bill)
@@ -8422,7 +9505,10 @@ def jwt_sync():
             "icon": b.icon,
             "type": b.type,
             "account": b.account,
+            "category": b.category,
             "notes": b.notes,
+            "reminder_enabled": b.reminder_enabled,
+            "reminder_days": parse_reminder_days(b.reminder_days),
             "archived": b.archived,
             "last_updated": b.last_updated.isoformat() if b.last_updated else None,
         }
@@ -8502,7 +9588,10 @@ def jwt_sync_full():
             "icon": b.icon,
             "type": b.type,
             "account": b.account,
+            "category": b.category,
             "notes": b.notes,
+            "reminder_enabled": b.reminder_enabled,
+            "reminder_days": parse_reminder_days(b.reminder_days),
             "archived": b.archived,
             "last_updated": b.last_updated.isoformat() if b.last_updated else None,
         }

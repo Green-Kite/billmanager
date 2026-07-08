@@ -204,11 +204,15 @@ export interface Bill {
   frequency_config: string;
   next_due: string;
   auto_payment: boolean;
+  reminder_enabled?: boolean;
+  reminder_days?: number[];
   paid: boolean;
   archived: boolean;
   icon: string;
   type: 'expense' | 'deposit';
   account: string | null;
+  category?: string | null;
+  notes?: string | null;
   created_at: string;
   avg_amount?: number;
   is_shared: boolean;
@@ -414,6 +418,9 @@ export const addBill = (bill: Partial<Bill>) =>
 export const getAccounts = () =>
   unwrap(api.get<ApiResponse<string[]>>('/accounts'));
 
+export const getCategories = () =>
+  unwrap(api.get<ApiResponse<string[]>>('/categories'));
+
 export const updateBill = (id: number, bill: Partial<Bill>) =>
   unwrap(api.put<ApiResponse<void>>(`/bills/${id}`, bill));
 
@@ -452,6 +459,16 @@ export interface AccountStats {
 export const getStatsByAccount = () =>
   unwrap(api.get<ApiResponse<AccountStats[]>>('/stats/by-account'));
 
+export interface CategoryStats {
+  category: string;
+  expenses: number;
+  deposits: number;
+  total: number;
+}
+
+export const getStatsByCategory = () =>
+  unwrap(api.get<ApiResponse<CategoryStats[]>>('/stats/by-category'));
+
 export interface YearlyStats {
   [year: string]: {
     expenses: number;
@@ -487,6 +504,119 @@ export const getBillMonthlyPayments = (billName: string) =>
 // Auto-payment API
 export const processAutoPayments = () =>
   unwrap(api.post<ApiResponse<void>>('/process-auto-payments'));
+
+export interface CategoryBudget {
+  id: number;
+  database_id: number;
+  database_name?: string | null;
+  category: string;
+  monthly_limit: number;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface BudgetSummaryItem {
+  budget_id: number | null;
+  database_id: number;
+  database_name: string;
+  category: string;
+  monthly_limit: number | null;
+  spent: number;
+  remaining: number | null;
+  percent_used: number | null;
+  over_budget: boolean;
+  month: string;
+}
+
+export const getBudgets = () =>
+  unwrap(api.get<ApiResponse<CategoryBudget[]>>('/budgets'));
+
+export const createBudget = (data: { category: string; monthly_limit: number; database_id?: number | null }) =>
+  unwrap(api.post<ApiResponse<CategoryBudget>>('/budgets', data));
+
+export const updateBudget = (
+  id: number,
+  data: { category?: string; monthly_limit?: number; database_id?: number | null }
+) =>
+  unwrap(api.put<ApiResponse<CategoryBudget>>(`/budgets/${id}`, data));
+
+export const deleteBudget = (id: number) =>
+  unwrap(api.delete<ApiResponse<{ message: string }>>(`/budgets/${id}`));
+
+export const getBudgetSummary = (month?: string) =>
+  unwrap(api.get<ApiResponse<BudgetSummaryItem[]>>(`/budgets/summary${month ? `?month=${encodeURIComponent(month)}` : ''}`));
+
+export interface ReminderAlert {
+  type: 'overdue' | 'due_today' | 'deposit_today' | 'upcoming' | 'deposit_expected';
+  severity: 'critical' | 'warning' | 'info';
+  title: string;
+  message: string;
+  bill_id: number;
+  bill_name: string;
+  bill_type: 'expense' | 'deposit';
+  amount: number | null;
+  due_date: string;
+  days_until_due: number;
+  database_id: number;
+  database_name: string;
+  category?: string | null;
+  account?: string | null;
+}
+
+export const getReminderAlerts = (horizonDays = 30) =>
+  unwrap(api.get<ApiResponse<ReminderAlert[]>>(`/alerts/upcoming?horizon_days=${horizonDays}`));
+
+export interface CashFlowForecastSummary {
+  start_date: string;
+  end_date: string;
+  days: number;
+  starting_balance: number;
+  ending_balance: number;
+  lowest_balance: number;
+  lowest_balance_date: string;
+  total_income: number;
+  total_expenses: number;
+  net_change: number;
+  runway_days: number | null;
+  first_negative_date: string | null;
+  occurrence_count: number;
+}
+
+export interface CashFlowForecastDay {
+  date: string;
+  balance: number;
+  net_change: number;
+}
+
+export interface CashFlowForecastOccurrence {
+  date: string;
+  bill_id: number;
+  bill_name: string;
+  bill_icon: string;
+  bill_type: 'expense' | 'deposit';
+  database_id: number;
+  database_name: string;
+  source: 'bill' | 'shared';
+  share_id: number | null;
+  counterparty_name: string | null;
+  amount: number;
+  signed_amount: number;
+  balance_after: number;
+  category: string | null;
+  account: string | null;
+  is_variable: boolean;
+}
+
+export interface CashFlowForecast {
+  summary: CashFlowForecastSummary;
+  daily: CashFlowForecastDay[];
+  occurrences: CashFlowForecastOccurrence[];
+}
+
+export const getCashFlowForecast = (startingBalance = 0, days = 60) =>
+  unwrap(api.get<ApiResponse<CashFlowForecast>>(
+    `/forecast/cash-flow?starting_balance=${encodeURIComponent(startingBalance)}&days=${encodeURIComponent(days)}`
+  ));
 
 // Version API
 export const getVersion = () =>
@@ -681,6 +811,57 @@ export interface SharedBill {
   created_at: string | null;
 }
 
+export interface SettlementItem {
+  share_id: number;
+  direction: 'owed_to_me' | 'i_owe';
+  bill_id: number;
+  bill_name: string;
+  bill_icon: string;
+  bill_type: 'expense' | 'deposit';
+  database_id: number;
+  database_name: string | null;
+  counterparty_user_id: number | null;
+  counterparty_name: string;
+  counterparty_identifier: string;
+  amount: number;
+  total_amount: number | null;
+  due_date: string;
+  days_until_due: number | null;
+  due_status: 'paid' | 'overdue' | 'due_today' | 'upcoming' | 'unknown';
+  split_type: 'percentage' | 'fixed' | 'equal' | null;
+  split_value: number | null;
+  paid: boolean;
+  paid_date: string | null;
+  created_at: string | null;
+  accepted_at: string | null;
+}
+
+export interface SettlementPersonSummary {
+  counterparty_name: string;
+  owed_to_me: number;
+  i_owe: number;
+  net: number;
+  open_count: number;
+}
+
+export interface SettlementSummary {
+  owed_to_me: number;
+  i_owe: number;
+  net_balance: number;
+  open_count: number;
+  settled_count: number;
+  overdue_owed_to_me: number;
+  overdue_i_owe: number;
+}
+
+export interface SettlementsResponse {
+  summary: SettlementSummary;
+  owed_to_me: SettlementItem[];
+  i_owe: SettlementItem[];
+  settled: SettlementItem[];
+  people: SettlementPersonSummary[];
+}
+
 export interface PendingShare {
   share_id: number;
   bill_name: string;
@@ -722,6 +903,10 @@ export const updateShare = (shareId: number, data: { split_type?: string | null;
 // Get bills shared with current user
 export const getSharedBills = () =>
   unwrap(api.get<ApiResponse<SharedBill[]>>('/shared-bills'));
+
+// Get shared-bill settlement ledger
+export const getSettlements = () =>
+  unwrap(api.get<ApiResponse<SettlementsResponse>>('/settlements'));
 
 // Get pending share invitations
 export const getPendingShares = () =>

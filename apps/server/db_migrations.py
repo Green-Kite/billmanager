@@ -710,6 +710,67 @@ def migrate_20260226_01_ensure_share_audit_log_indexes(db):
         logger.info("Ensured share_audit_log indexes")
     else:
         logger.info("All share_audit_log indexes already exist")
+
+
+def migrate_20260608_01_create_category_budgets(db):
+    """Create category budgets and ensure bill category/notes columns exist."""
+    logger.info("Running migration: 20260608_01_create_category_budgets")
+
+    inspector = inspect(db.engine)
+
+    bill_columns = [col['name'] for col in inspector.get_columns('bills')]
+    if 'category' not in bill_columns:
+        db.session.execute(text('''
+            ALTER TABLE bills ADD COLUMN category VARCHAR(50)
+        '''))
+        logger.info("Added bills.category column")
+
+    if 'notes' not in bill_columns:
+        db.session.execute(text('''
+            ALTER TABLE bills ADD COLUMN notes TEXT
+        '''))
+        logger.info("Added bills.notes column")
+
+    if 'category_budgets' not in inspector.get_table_names():
+        db.session.execute(text('''
+            CREATE TABLE category_budgets (
+                id SERIAL PRIMARY KEY,
+                database_id INTEGER NOT NULL REFERENCES databases(id) ON DELETE CASCADE,
+                category VARCHAR(50) NOT NULL,
+                monthly_limit DOUBLE PRECISION NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT uq_category_budget_database_category UNIQUE(database_id, category)
+            )
+        '''))
+        db.session.execute(text('''
+            CREATE INDEX idx_category_budgets_database_id ON category_budgets(database_id)
+        '''))
+        logger.info("Created category_budgets table")
+
+    db.session.commit()
+
+
+def migrate_20260608_02_add_bill_reminder_preferences(db):
+    """Add per-bill reminder preferences."""
+    logger.info("Running migration: 20260608_02_add_bill_reminder_preferences")
+
+    inspector = inspect(db.engine)
+    bill_columns = [col['name'] for col in inspector.get_columns('bills')]
+
+    if 'reminder_enabled' not in bill_columns:
+        db.session.execute(text('''
+            ALTER TABLE bills ADD COLUMN reminder_enabled BOOLEAN DEFAULT TRUE
+        '''))
+        logger.info("Added bills.reminder_enabled column")
+
+    if 'reminder_days' not in bill_columns:
+        db.session.execute(text('''
+            ALTER TABLE bills ADD COLUMN reminder_days VARCHAR(100) DEFAULT '0,1,3,7'
+        '''))
+        logger.info("Added bills.reminder_days column")
+
+    db.session.commit()
 # List of all migrations in order
 # Format: (version, description, function)
 MIGRATIONS = [
@@ -735,6 +796,8 @@ MIGRATIONS = [
     ('20260210_05', 'Add auth_provider column to users', migrate_20260210_05_add_auth_provider),
     ('20260219_01', 'Add change_token_expires to users for password change tokens', migrate_20260219_01_add_change_token_expiry),
     ('20260226_01', 'Ensure share_audit_log performance indexes exist', migrate_20260226_01_ensure_share_audit_log_indexes),
+    ('20260608_01', 'Create category budgets and ensure bill category fields', migrate_20260608_01_create_category_budgets),
+    ('20260608_02', 'Add per-bill reminder preferences', migrate_20260608_02_add_bill_reminder_preferences),
 ]
 
 

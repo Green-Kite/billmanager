@@ -217,6 +217,7 @@ class Database(db.Model):
 
     # Relationships
     bills = db.relationship('Bill', backref='database', lazy=True, cascade="all, delete-orphan")
+    category_budgets = db.relationship('CategoryBudget', backref='database', lazy=True, cascade="all, delete-orphan")
     owner = db.relationship('User', foreign_keys=[owner_id], backref='owned_databases')
 
 class Bill(db.Model):
@@ -232,6 +233,8 @@ class Bill(db.Model):
     account = db.Column(db.String(100))
     icon = db.Column(db.String(50))
     auto_pay = db.Column(db.Boolean, default=False)
+    reminder_enabled = db.Column(db.Boolean, default=True)
+    reminder_days = db.Column(db.String(100), default='0,1,3,7')
     
     # Legacy/Advanced Frequency Support
     frequency_type = db.Column(db.String(20), default='simple')
@@ -258,6 +261,23 @@ class Payment(db.Model):
 
     # Relationship to share (for shared bill payments)
     share = db.relationship('BillShare', backref=db.backref('payments', lazy=True))
+
+
+class CategoryBudget(db.Model):
+    """Monthly budget target for one spending category inside a bill group."""
+    __tablename__ = 'category_budgets'
+
+    id = db.Column(db.Integer, primary_key=True)
+    database_id = db.Column(db.Integer, db.ForeignKey('databases.id'), nullable=False)
+    category = db.Column(db.String(50), nullable=False)
+    monthly_limit = db.Column(db.Float, nullable=False)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        db.UniqueConstraint('database_id', 'category', name='uq_category_budget_database_category'),
+        db.Index('idx_category_budgets_database_id', 'database_id'),
+    )
 
 
 class RefreshToken(db.Model):

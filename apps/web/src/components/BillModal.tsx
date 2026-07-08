@@ -2,8 +2,10 @@ import { useEffect, useState } from 'react';
 import {
   Modal,
   TextInput,
+  Textarea,
   NumberInput,
   Select,
+  MultiSelect,
   Switch,
   Button,
   Group,
@@ -38,9 +40,13 @@ interface BillFormValues {
   weekly_days: number[];
   next_due: Date | null;
   auto_payment: boolean;
+  reminder_enabled: boolean;
+  reminder_days: string[];
   icon: string;
   type: 'expense' | 'deposit';
   account: string | null;
+  category: string | null;
+  notes: string;
   database_id: number | null;
 }
 
@@ -75,11 +81,21 @@ const dayOptions = [
   { label: 'Sun', value: 6 },
 ];
 
+const reminderDayOptions = [
+  { value: '0', label: 'Due day' },
+  { value: '1', label: '1 day before' },
+  { value: '3', label: '3 days before' },
+  { value: '7', label: '1 week before' },
+  { value: '14', label: '2 weeks before' },
+  { value: '30', label: '30 days before' },
+];
+
 export function BillModal({ opened, onClose, onSave, onArchive, onUnarchive, onDelete, bill, isAllBucketsMode = false, databases = [] }: BillModalProps) {
   const [iconPickerOpen, setIconPickerOpen] = useState(false);
   const [shareModalOpen, setShareModalOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [accounts, setAccounts] = useState<string[]>([]);
+  const [categories, setCategories] = useState<string[]>([]);
   const [billShares, setBillShares] = useState<BillShare[]>([]);
 
   const form = useForm<BillFormValues>({
@@ -93,9 +109,13 @@ export function BillModal({ opened, onClose, onSave, onArchive, onUnarchive, onD
       weekly_days: [],
       next_due: null,
       auto_payment: false,
+      reminder_enabled: true,
+      reminder_days: ['0', '1', '3', '7'],
       icon: 'payment',
       type: 'expense',
       account: null,
+      category: null,
+      notes: '',
       database_id: null,
     },
     validate: {
@@ -133,6 +153,13 @@ export function BillModal({ opened, onClose, onSave, onArchive, onUnarchive, onD
         })
         .catch(() => {
           setAccounts([]); // Fallback to empty list instead of crashing
+        });
+      api.getCategories()
+        .then(response => {
+          setCategories(response);
+        })
+        .catch(() => {
+          setCategories([]);
         });
     }
   }, [opened]);
@@ -173,9 +200,13 @@ export function BillModal({ opened, onClose, onSave, onArchive, onUnarchive, onD
             weekly_days: (frequencyConfig && frequencyConfig.days) ? frequencyConfig.days : [],
             next_due: bill.next_due ? parseLocalDate(bill.next_due) : null,
             auto_payment: bill.auto_payment || false,
+            reminder_enabled: bill.reminder_enabled ?? true,
+            reminder_days: (bill.reminder_days && bill.reminder_days.length > 0 ? bill.reminder_days : [0, 1, 3, 7]).map(String),
             icon: bill.icon || 'payment',
             type: bill.type || 'expense',
             account: bill.account || null,
+            category: bill.category || null,
+            notes: bill.notes || '',
             database_id: bill.database_id || null,
           });
         } else {
@@ -257,9 +288,13 @@ export function BillModal({ opened, onClose, onSave, onArchive, onUnarchive, onD
         frequency_config: JSON.stringify(frequencyConfig),
         next_due: nextDue,
         auto_payment: values.auto_payment,
+        reminder_enabled: values.reminder_enabled,
+        reminder_days: values.reminder_days.map((day) => Number(day)),
         icon: values.icon,
         type: values.type,
         account: values.account || null,
+        category: values.category || null,
+        notes: values.notes.trim() || null,
         // Include database_id if creating in All Buckets mode or moving to a different bucket
         ...(values.database_id ? { database_id: values.database_id } : {}),
       };
@@ -332,6 +367,15 @@ export function BillModal({ opened, onClose, onSave, onArchive, onUnarchive, onD
                 limit={5}
               />
             </Group>
+
+            <Autocomplete
+              label="Category"
+              placeholder="Utilities, Housing, Subscriptions..."
+              data={categories}
+              value={form.values.category || ''}
+              onChange={(value) => form.setFieldValue('category', value || null)}
+              limit={8}
+            />
 
             {/* Bucket selector - shown when creating in All Buckets mode or editing any bill */}
             {(isAllBucketsMode || bill) && databases.length > 0 && (
@@ -469,6 +513,35 @@ export function BillModal({ opened, onClose, onSave, onArchive, onUnarchive, onD
               onChange={(event) =>
                 form.setFieldValue('auto_payment', event.currentTarget.checked)
               }
+            />
+
+            <Switch
+              label="Reminders"
+              description="Use this bill in reminder notifications and dashboard alerts"
+              checked={form.values.reminder_enabled}
+              onChange={(event) =>
+                form.setFieldValue('reminder_enabled', event.currentTarget.checked)
+              }
+            />
+
+            {form.values.reminder_enabled && (
+              <MultiSelect
+                label="Reminder timing"
+                placeholder="Choose reminder windows"
+                data={reminderDayOptions}
+                value={form.values.reminder_days}
+                onChange={(value) => form.setFieldValue('reminder_days', value)}
+                clearable={false}
+              />
+            )}
+
+            <Textarea
+              label="Notes"
+              placeholder="Confirmation details, renewal notes, cancellation terms..."
+              autosize
+              minRows={2}
+              maxRows={5}
+              {...form.getInputProps('notes')}
             />
 
             {/* Share button for existing bills */}

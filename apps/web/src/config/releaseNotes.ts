@@ -46,6 +46,53 @@ export interface ReleaseNote {
 
 export const releaseNotes: ReleaseNote[] = [
   {
+    version: '4.1.1',
+    date: '2026-07-08',
+    title: 'Self-Hosted OIDC Providers',
+    sections: [
+      {
+        heading: 'New Features',
+        items: [
+          'Generic OIDC sign-in for self-hosted providers such as Authelia, Authentik, Keycloak, and other OpenID Connect IdPs',
+          'Configurable token endpoint client authentication with client_secret_post, client_secret_basic, none, or auto modes',
+          'Configurable OIDC claim mapping for email, username, and display-name claims',
+        ],
+      },
+      {
+        heading: 'Security',
+        items: [
+          'OIDC authorization code flow uses PKCE, nonce validation, signed state, JWKS ID token verification, and state replay protection',
+          'Linked-account sign-in safely matches existing users by provider subject or verified email',
+          'Optional email verification bypass is available for trusted self-hosted providers that do not emit email_verified',
+        ],
+      },
+    ],
+  },
+  {
+    version: '4.1.0',
+    date: '2026-06-08',
+    title: 'Planning, Budgets, and Shared Bill Settlements',
+    sections: [
+      {
+        heading: 'New Features',
+        items: [
+          'Category budgets with monthly limits, budget progress, and over-budget indicators in Analytics',
+          'Cash Flow Forecast on the Dashboard with starting balance, 30/60/90 day horizons, projected balances, and upcoming cash events',
+          'Settlements page for shared bills showing what is owed to you, what you owe, person-level net balances, and recent settled shares',
+          'Per-bill reminder preferences with upcoming, due today, deposit, and overdue alert support',
+        ],
+      },
+      {
+        heading: 'Improvements',
+        items: [
+          'Bills now support categories and notes throughout create, edit, filters, exports, and sync payloads',
+          'Shared bill payables are included in cash-flow projections so split expenses are visible before they are paid',
+          'Dashboard reminder alerts now honor each bill\'s configured reminder windows',
+        ],
+      },
+    ],
+  },
+  {
     version: '4.0.2',
     date: '2026-03-30',
     title: 'Security Hardening and Release Stability',

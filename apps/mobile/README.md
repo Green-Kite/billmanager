@@ -80,5 +80,5 @@ src/
 Run the Flask backend locally:
 ```bash
 cd ../billmanager/server
-DATABASE_URL=postgresql://billsuser:billspass@192.168.40.240:5432/bills_test FLASK_RUN_PORT=5001 python app.py
+DATABASE_URL=postgresql://billsuser:billspass@192.168.40.113:5432/bills_test FLASK_RUN_PORT=5001 python app.py
 ```

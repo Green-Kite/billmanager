@@ -11,6 +11,21 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
+def _oauth_token_auth_method(env_var, default="client_secret_post"):
+    """Read and validate an OAuth token endpoint client auth method."""
+    value = os.environ.get(env_var, default).strip().lower()
+    allowed = {"client_secret_post", "client_secret_basic", "none", "auto"}
+    if value not in allowed:
+        logger.warning(
+            "Invalid %s=%s; falling back to %s",
+            env_var,
+            value,
+            default,
+        )
+        return default
+    return value
+
 # Deployment mode: 'self-hosted' or 'saas'
 DEPLOYMENT_MODE = os.environ.get("DEPLOYMENT_MODE", "self-hosted")
 
@@ -113,6 +128,7 @@ _OAUTH_PROVIDER_CONFIGS = {
         "enabled": os.environ.get("OAUTH_GOOGLE_ENABLED", "false").lower() == "true",
         "client_id": os.environ.get("OAUTH_GOOGLE_CLIENT_ID"),
         "client_secret": os.environ.get("OAUTH_GOOGLE_CLIENT_SECRET"),
+        "token_auth_method": "client_secret_post",
         "discovery_url": "https://accounts.google.com/.well-known/openid-configuration",
         "scopes": "openid email profile",
         "display_name": "Google",
@@ -125,6 +141,7 @@ _OAUTH_PROVIDER_CONFIGS = {
         "team_id": os.environ.get("OAUTH_APPLE_TEAM_ID"),
         "key_id": os.environ.get("OAUTH_APPLE_KEY_ID"),
         "private_key": os.environ.get("OAUTH_APPLE_PRIVATE_KEY"),
+        "token_auth_method": "client_secret_post",
         "discovery_url": "https://appleid.apple.com/.well-known/openid-configuration",
         "scopes": "openid email name",
         "display_name": "Apple",
@@ -135,6 +152,7 @@ _OAUTH_PROVIDER_CONFIGS = {
         "client_id": os.environ.get("OAUTH_MICROSOFT_CLIENT_ID"),
         "client_secret": os.environ.get("OAUTH_MICROSOFT_CLIENT_SECRET"),
         "tenant_id": os.environ.get("OAUTH_MICROSOFT_TENANT_ID", "common"),
+        "token_auth_method": "client_secret_post",
         "discovery_url": None,  # Built dynamically from tenant_id
         "scopes": "openid email profile",
         "display_name": "Microsoft",
@@ -144,6 +162,7 @@ _OAUTH_PROVIDER_CONFIGS = {
         "enabled": os.environ.get("OAUTH_OIDC_ENABLED", "false").lower() == "true",
         "client_id": os.environ.get("OAUTH_OIDC_CLIENT_ID"),
         "client_secret": os.environ.get("OAUTH_OIDC_CLIENT_SECRET"),
+        "token_auth_method": _oauth_token_auth_method("OAUTH_OIDC_TOKEN_AUTH_METHOD"),
         "discovery_url": os.environ.get("OAUTH_OIDC_DISCOVERY_URL"),
         "scopes": os.environ.get("OAUTH_OIDC_SCOPES", "openid email profile"),
         "display_name": os.environ.get("OAUTH_OIDC_DISPLAY_NAME", "SSO"),
@@ -183,12 +202,15 @@ def get_enabled_oauth_providers():
         "google": ["client_id", "client_secret"],
         "apple": ["client_id", "team_id", "key_id", "private_key"],
         "microsoft": ["client_id", "client_secret"],
-        "oidc": ["client_id", "client_secret", "discovery_url"],
+        "oidc": ["client_id", "discovery_url"],
     }
     for provider, cfg in _OAUTH_PROVIDER_CONFIGS.items():
         if not cfg.get("enabled"):
             continue
-        missing = [f for f in required_fields.get(provider, []) if not cfg.get(f)]
+        provider_required_fields = list(required_fields.get(provider, []))
+        if provider == "oidc" and cfg.get("token_auth_method") not in ("none", "auto"):
+            provider_required_fields.append("client_secret")
+        missing = [f for f in provider_required_fields if not cfg.get(f)]
         if missing:
             logger.warning("OAuth provider enabled but missing required credentials")
             continue
