@@ -28,6 +28,7 @@ import {
 import * as api from '../../api/client';
 import type { CashFlowForecast as CashFlowForecastData } from '../../api/client';
 import { BillIcon } from '../BillIcon';
+import { formatCurrency } from '../../lib/currency';
 
 interface CashFlowForecastProps {
   hasDatabase: boolean;
@@ -36,15 +37,6 @@ interface CashFlowForecastProps {
 }
 
 const STORAGE_KEY = 'billmanager:forecast-starting-balance';
-
-const currencyFormatter = new Intl.NumberFormat('en-US', {
-  style: 'currency',
-  currency: 'USD',
-});
-
-function formatCurrency(value: number | null | undefined): string {
-  return currencyFormatter.format(value ?? 0);
-}
 
 function formatShortDate(dateStr: string): string {
   const [year, month, day] = dateStr.split('-').map(Number);
