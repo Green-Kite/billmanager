@@ -28,7 +28,7 @@ import {
 import * as api from '../../api/client';
 import type { CashFlowForecast as CashFlowForecastData } from '../../api/client';
 import { BillIcon } from '../BillIcon';
-import { formatCurrency } from '../../lib/currency';
+import { formatCurrency, formatCurrencyAxis, getCurrencySymbol } from '../../lib/currency';
 
 interface CashFlowForecastProps {
   hasDatabase: boolean;
@@ -144,7 +144,7 @@ export function CashFlowForecast({ hasDatabase, framed = true, showHeader = true
           <Group gap="sm" align="flex-end">
             <NumberInput
               label="Starting balance"
-              prefix="$"
+              prefix={getCurrencySymbol()}
               decimalScale={2}
               value={startingBalance}
               onChange={(value) => setStartingBalance(typeof value === 'number' ? value : 0)}
@@ -220,7 +220,7 @@ export function CashFlowForecast({ hasDatabase, framed = true, showHeader = true
                 curveType="linear"
                 withTooltip
                 yAxisProps={{
-                  tickFormatter: (value: number) => `$${value}`,
+                  tickFormatter: (value: number) => formatCurrencyAxis(value),
                 }}
               />
             )}

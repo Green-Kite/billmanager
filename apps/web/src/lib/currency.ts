@@ -16,6 +16,7 @@ let currentLocale = 'en-US';
 let currentCurrency = 'USD';
 let formatter = buildFormatter();
 let axisFormatter = buildFormatter({ maximumFractionDigits: 0 });
+let cachedSymbol = extractSymbol(formatter);
 
 function buildFormatter(extra: Intl.NumberFormatOptions = {}): Intl.NumberFormat {
   return new Intl.NumberFormat(currentLocale, {
@@ -23,6 +24,11 @@ function buildFormatter(extra: Intl.NumberFormatOptions = {}): Intl.NumberFormat
     currency: currentCurrency,
     ...extra,
   });
+}
+
+function extractSymbol(fmt: Intl.NumberFormat): string {
+  const part = fmt.formatToParts(0).find((p) => p.type === 'currency');
+  return part?.value ?? currentCurrency;
 }
 
 export function setCurrencyConfig(locale: string, currency: string): void {
@@ -36,6 +42,7 @@ export function setCurrencyConfig(locale: string, currency: string): void {
   try {
     formatter = buildFormatter();
     axisFormatter = buildFormatter({ maximumFractionDigits: 0 });
+    cachedSymbol = extractSymbol(formatter);
   } catch {
     // Invalid locale/currency combination (e.g. bad env var) - roll back
     // rather than breaking the whole UI.
@@ -57,4 +64,12 @@ export function formatCurrency(value: number | null | undefined): string {
  */
 export function formatCurrencyAxis(value: number | null | undefined): string {
   return axisFormatter.format(value ?? 0);
+}
+
+/**
+ * Currency symbol only (e.g. "$", "€"), for use as a NumberInput prefix
+ * where full Intl formatting doesn't apply (raw numeric entry fields).
+ */
+export function getCurrencySymbol(): string {
+  return cachedSymbol;
 }
