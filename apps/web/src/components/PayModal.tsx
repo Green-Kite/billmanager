@@ -8,6 +8,7 @@ import {
   Stack,
   Text,
 } from '@mantine/core';
+import { useTranslation } from 'react-i18next';
 import type { Bill } from '../api/client';
 import { getCurrencySymbol } from '../lib/currency';
 
@@ -19,6 +20,7 @@ interface PayModalProps {
 }
 
 export function PayModal({ opened, onClose, onPay, bill }: PayModalProps) {
+  const { t } = useTranslation();
   const [amount, setAmount] = useState<number | ''>('');
   const [advanceDue, setAdvanceDue] = useState(true);
   const [loading, setLoading] = useState(false);
@@ -51,16 +53,18 @@ export function PayModal({ opened, onClose, onPay, bill }: PayModalProps) {
     <Modal
       opened={opened}
       onClose={onClose}
-      title={`${isDeposit ? 'Record' : 'Pay'}: ${bill?.name || 'Bill'}`}
+      title={isDeposit
+        ? t('payModal.titleRecord', { name: bill?.name || t('payModal.billFallback') })
+        : t('payModal.titlePay', { name: bill?.name || t('payModal.billFallback') })}
       centered
     >
       <Stack gap="md">
         <Text size="sm" c="dimmed">
-          Record a {isDeposit ? 'deposit' : 'payment'} for this {isDeposit ? 'income' : 'bill'}.
+          {isDeposit ? t('payModal.descriptionDeposit') : t('payModal.descriptionPayment')}
         </Text>
 
         <NumberInput
-          label={isDeposit ? 'Deposit Amount' : 'Payment Amount'}
+          label={isDeposit ? t('payModal.depositAmountLabel') : t('payModal.paymentAmountLabel')}
           placeholder="0.00"
           prefix={getCurrencySymbol()}
           decimalScale={2}
@@ -68,19 +72,19 @@ export function PayModal({ opened, onClose, onPay, bill }: PayModalProps) {
           min={0}
           value={amount}
           onChange={(val) => setAmount(val === '' ? '' : Number(val))}
-          description={bill?.varies ? `This ${isDeposit ? 'deposit' : 'bill'} has a variable amount` : undefined}
+          description={bill?.varies ? (isDeposit ? t('payModal.variableAmountDeposit') : t('payModal.variableAmountBill')) : undefined}
         />
 
         <Switch
-          label="Advance due date"
-          description={`Create the next recurring ${isDeposit ? 'deposit' : 'bill'}`}
+          label={t('payModal.advanceDueLabel')}
+          description={isDeposit ? t('payModal.advanceDueDescDeposit') : t('payModal.advanceDueDescBill')}
           checked={advanceDue}
           onChange={(event) => setAdvanceDue(event.currentTarget.checked)}
         />
 
         <Group justify="flex-end" mt="md">
           <Button variant="default" onClick={onClose}>
-            Cancel
+            {t('common.actions.cancel')}
           </Button>
           <Button
             color={isDeposit ? 'green' : 'blue'}
@@ -88,7 +92,7 @@ export function PayModal({ opened, onClose, onPay, bill }: PayModalProps) {
             loading={loading}
             disabled={amount === '' || (typeof amount === 'number' && amount < 0)}
           >
-            Record {isDeposit ? 'Deposit' : 'Payment'}
+            {isDeposit ? t('payModal.recordDeposit') : t('payModal.recordPayment')}
           </Button>
         </Group>
       </Stack>

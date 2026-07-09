@@ -23,13 +23,15 @@ import {
 import { IconArchive, IconArchiveOff, IconTrash, IconShare } from '@tabler/icons-react';
 import { DatePickerInput } from '@mantine/dates';
 import { useForm } from '@mantine/form';
+import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import type { Bill, BillShare, Database } from '../api/client';
 import * as api from '../api/client';
 import { IconPicker } from './IconPicker';
 import { BillIcon } from './BillIcon';
 import { ShareBillModal } from './ShareBillModal';
 import { formatDateForAPI, parseLocalDate } from '../utils/date';
-import { getCurrencySymbol } from '../lib/currency';
+import { getCurrencySymbol, getLocale } from '../lib/currency';
 
 interface BillFormValues {
   name: string;
@@ -63,35 +65,45 @@ interface BillModalProps {
   databases?: Database[];
 }
 
-const frequencyOptions = [
-  { value: 'weekly', label: 'Weekly' },
-  { value: 'bi-weekly', label: 'Bi-weekly' },
-  { value: 'monthly', label: 'Monthly' },
-  { value: 'quarterly', label: 'Quarterly' },
-  { value: 'yearly', label: 'Yearly' },
-  { value: 'custom', label: 'Custom (multiple days/week)' },
-];
+function getFrequencyOptions(t: TFunction) {
+  return [
+    { value: 'weekly', label: t('common.frequency.weekly') },
+    { value: 'bi-weekly', label: t('common.frequency.biweekly') },
+    { value: 'monthly', label: t('common.frequency.monthly') },
+    { value: 'quarterly', label: t('common.frequency.quarterly') },
+    { value: 'yearly', label: t('common.frequency.yearly') },
+    { value: 'custom', label: t('billModal.frequencyCustomLabel') },
+  ];
+}
 
-const dayOptions = [
-  { label: 'Mon', value: 0 },
-  { label: 'Tue', value: 1 },
-  { label: 'Wed', value: 2 },
-  { label: 'Thu', value: 3 },
-  { label: 'Fri', value: 4 },
-  { label: 'Sat', value: 5 },
-  { label: 'Sun', value: 6 },
-];
+function getDayOptions(t: TFunction) {
+  return [
+    { label: t('common.weekdaysShort.mon'), value: 0 },
+    { label: t('common.weekdaysShort.tue'), value: 1 },
+    { label: t('common.weekdaysShort.wed'), value: 2 },
+    { label: t('common.weekdaysShort.thu'), value: 3 },
+    { label: t('common.weekdaysShort.fri'), value: 4 },
+    { label: t('common.weekdaysShort.sat'), value: 5 },
+    { label: t('common.weekdaysShort.sun'), value: 6 },
+  ];
+}
 
-const reminderDayOptions = [
-  { value: '0', label: 'Due day' },
-  { value: '1', label: '1 day before' },
-  { value: '3', label: '3 days before' },
-  { value: '7', label: '1 week before' },
-  { value: '14', label: '2 weeks before' },
-  { value: '30', label: '30 days before' },
-];
+function getReminderDayOptions(t: TFunction) {
+  return [
+    { value: '0', label: t('billModal.reminderOptions.dueDay') },
+    { value: '1', label: t('billModal.reminderOptions.oneDayBefore') },
+    { value: '3', label: t('billModal.reminderOptions.threeDaysBefore') },
+    { value: '7', label: t('billModal.reminderOptions.oneWeekBefore') },
+    { value: '14', label: t('billModal.reminderOptions.twoWeeksBefore') },
+    { value: '30', label: t('billModal.reminderOptions.thirtyDaysBefore') },
+  ];
+}
 
 export function BillModal({ opened, onClose, onSave, onArchive, onUnarchive, onDelete, bill, isAllBucketsMode = false, databases = [] }: BillModalProps) {
+  const { t } = useTranslation();
+  const frequencyOptions = getFrequencyOptions(t);
+  const dayOptions = getDayOptions(t);
+  const reminderDayOptions = getReminderDayOptions(t);
   const [iconPickerOpen, setIconPickerOpen] = useState(false);
   const [shareModalOpen, setShareModalOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -120,26 +132,26 @@ export function BillModal({ opened, onClose, onSave, onArchive, onUnarchive, onD
       database_id: null,
     },
     validate: {
-      name: (value) => (!value.trim() ? 'Name is required' : null),
+      name: (value) => (!value.trim() ? t('billModal.errors.nameRequired') : null),
       next_due: (value, values) => {
         if (values.frequency === 'monthly' && values.frequency_type === 'specific_dates') {
           return null; // Not required for specific dates
         }
-        return !value ? 'Due date is required' : null;
+        return !value ? t('billModal.errors.dueDateRequired') : null;
       },
       monthly_dates: (value, values) => {
         if (values.frequency === 'monthly' && values.frequency_type === 'specific_dates') {
-          if (!value.trim()) return 'Enter at least one date';
+          if (!value.trim()) return t('billModal.errors.datesRequired');
           const dates = value.split(',').map((d) => parseInt(d.trim()));
           if (dates.some((d) => isNaN(d) || d < 1 || d > 31)) {
-            return 'Invalid date(s). Use numbers 1-31';
+            return t('billModal.errors.datesInvalid');
           }
         }
         return null;
       },
       weekly_days: (value, values) => {
         if (values.frequency === 'custom' && values.frequency_type === 'multiple_weekly') {
-          if (value.length === 0) return 'Select at least one day';
+          if (value.length === 0) return t('billModal.errors.daysRequired');
         }
         return null;
       },
@@ -244,7 +256,7 @@ export function BillModal({ opened, onClose, onSave, onArchive, onUnarchive, onD
     // Validate bucket selection when creating in All Buckets mode
     const isCreating = !bill;
     if (isCreating && isAllBucketsMode && !values.database_id) {
-      form.setFieldError('database_id', 'Please select a bucket');
+      form.setFieldError('database_id', t('billModal.errors.bucketRequired'));
       return;
     }
 
@@ -321,7 +333,7 @@ export function BillModal({ opened, onClose, onSave, onArchive, onUnarchive, onD
       <Modal
         opened={opened}
         onClose={onClose}
-        title={bill ? 'Edit Bill' : 'Add Bill'}
+        title={bill ? t('billModal.titleEdit') : t('billModal.titleAdd')}
         size="lg"
         centered
       >
@@ -330,14 +342,14 @@ export function BillModal({ opened, onClose, onSave, onArchive, onUnarchive, onD
             {/* Row 1: Name and Icon */}
             <Group grow align="flex-start">
               <TextInput
-                label="Bill Name"
-                placeholder="Enter bill name"
+                label={t('billModal.billNameLabel')}
+                placeholder={t('billModal.billNamePlaceholder')}
                 required
                 {...form.getInputProps('name')}
               />
               <div>
                 <Text size="sm" fw={500} mb={4}>
-                  Icon
+                  {t('billModal.iconLabel')}
                 </Text>
                 <ActionIcon
                   variant="light"
@@ -352,16 +364,16 @@ export function BillModal({ opened, onClose, onSave, onArchive, onUnarchive, onD
             {/* Row 2: Type and Account */}
             <Group grow align="flex-end">
               <Select
-                label="Type"
+                label={t('billModal.typeLabel')}
                 data={[
-                  { value: 'expense', label: 'Expense (Bill)' },
-                  { value: 'deposit', label: 'Deposit (Income)' }
+                  { value: 'expense', label: t('billModal.typeExpense') },
+                  { value: 'deposit', label: t('billModal.typeDeposit') }
                 ]}
                 {...form.getInputProps('type')}
               />
               <Autocomplete
-                label="Account"
-                placeholder="Type account name"
+                label={t('billModal.accountLabel')}
+                placeholder={t('billModal.accountPlaceholder')}
                 data={accounts}
                 value={form.values.account || ''}
                 onChange={(value) => form.setFieldValue('account', value || null)}
@@ -370,8 +382,8 @@ export function BillModal({ opened, onClose, onSave, onArchive, onUnarchive, onD
             </Group>
 
             <Autocomplete
-              label="Category"
-              placeholder="Utilities, Housing, Subscriptions..."
+              label={t('billModal.categoryLabel')}
+              placeholder={t('billModal.categoryPlaceholder')}
               data={categories}
               value={form.values.category || ''}
               onChange={(value) => form.setFieldValue('category', value || null)}
@@ -381,9 +393,9 @@ export function BillModal({ opened, onClose, onSave, onArchive, onUnarchive, onD
             {/* Bucket selector - shown when creating in All Buckets mode or editing any bill */}
             {(isAllBucketsMode || bill) && databases.length > 0 && (
               <Select
-                label="Bucket"
-                placeholder={!bill && isAllBucketsMode ? "Select a bucket" : "Move to bucket..."}
-                description={!bill && isAllBucketsMode ? "Select which bucket to create this bill in" : "Change which bucket this bill belongs to"}
+                label={t('billModal.bucketLabel')}
+                placeholder={!bill && isAllBucketsMode ? t('billModal.bucketPlaceholderCreate') : t('billModal.bucketPlaceholderMove')}
+                description={!bill && isAllBucketsMode ? t('billModal.bucketDescriptionCreate') : t('billModal.bucketDescriptionMove')}
                 data={databases.map((db) => ({
                   value: String(db.id),
                   label: db.display_name,
@@ -399,7 +411,7 @@ export function BillModal({ opened, onClose, onSave, onArchive, onUnarchive, onD
             {/* Row 3: Amount and Varies */}
             <Group grow align="flex-end">
               <NumberInput
-                label="Amount"
+                label={t('billModal.amountLabel')}
                 placeholder="0.00"
                 prefix={getCurrencySymbol()}
                 decimalScale={2}
@@ -408,7 +420,7 @@ export function BillModal({ opened, onClose, onSave, onArchive, onUnarchive, onD
                 {...form.getInputProps('amount')}
               />
               <Switch
-                label="Amount varies"
+                label={t('billModal.amountVariesLabel')}
                 checked={form.values.varies}
                 onChange={(event) =>
                   form.setFieldValue('varies', event.currentTarget.checked)
@@ -418,7 +430,7 @@ export function BillModal({ opened, onClose, onSave, onArchive, onUnarchive, onD
 
             {/* Row 3: Frequency */}
             <Select
-              label="Frequency"
+              label={t('billModal.frequencyLabel')}
               data={frequencyOptions}
               {...form.getInputProps('frequency')}
               onChange={(value) => {
@@ -438,11 +450,11 @@ export function BillModal({ opened, onClose, onSave, onArchive, onUnarchive, onD
               <Paper p="md" withBorder>
                 <Stack gap="xs">
                   <Text size="sm" fw={500}>
-                    Monthly Schedule
+                    {t('billModal.monthlySchedule')}
                   </Text>
                   <Group>
                     <Switch
-                      label="Use specific dates (e.g., 1st & 15th)"
+                      label={t('billModal.useSpecificDates')}
                       checked={form.values.frequency_type === 'specific_dates'}
                       onChange={(event) =>
                         form.setFieldValue(
@@ -454,9 +466,9 @@ export function BillModal({ opened, onClose, onSave, onArchive, onUnarchive, onD
                   </Group>
                   {showSpecificDates && (
                     <TextInput
-                      label="Dates (comma-separated)"
-                      placeholder="1, 15"
-                      description="Enter days of the month (1-31)"
+                      label={t('billModal.datesLabel')}
+                      placeholder={t('billModal.datesPlaceholder')}
+                      description={t('billModal.datesDescription')}
                       {...form.getInputProps('monthly_dates')}
                     />
                   )}
@@ -469,7 +481,7 @@ export function BillModal({ opened, onClose, onSave, onArchive, onUnarchive, onD
               <Paper p="md" withBorder>
                 <Stack gap="xs">
                   <Text size="sm" fw={500}>
-                    Days of Week
+                    {t('billModal.daysOfWeek')}
                   </Text>
                   <SimpleGrid cols={7}>
                     {dayOptions.map((day) => (
@@ -498,8 +510,8 @@ export function BillModal({ opened, onClose, onSave, onArchive, onUnarchive, onD
             {/* Due Date */}
             {!showSpecificDates && (
               <DatePickerInput
-                label="Next Due Date"
-                placeholder="Select date"
+                label={t('billModal.nextDueLabel')}
+                placeholder={t('billModal.nextDuePlaceholder')}
                 required
                 valueFormat="MMMM D, YYYY"
                 {...form.getInputProps('next_due')}
@@ -508,8 +520,8 @@ export function BillModal({ opened, onClose, onSave, onArchive, onUnarchive, onD
 
             {/* Auto Payment */}
             <Switch
-              label="Auto Payment"
-              description="Automatically process this bill when due"
+              label={t('billModal.autoPaymentLabel')}
+              description={t('billModal.autoPaymentDescription')}
               checked={form.values.auto_payment}
               onChange={(event) =>
                 form.setFieldValue('auto_payment', event.currentTarget.checked)
@@ -517,8 +529,8 @@ export function BillModal({ opened, onClose, onSave, onArchive, onUnarchive, onD
             />
 
             <Switch
-              label="Reminders"
-              description="Use this bill in reminder notifications and dashboard alerts"
+              label={t('billModal.remindersLabel')}
+              description={t('billModal.remindersDescription')}
               checked={form.values.reminder_enabled}
               onChange={(event) =>
                 form.setFieldValue('reminder_enabled', event.currentTarget.checked)
@@ -527,8 +539,8 @@ export function BillModal({ opened, onClose, onSave, onArchive, onUnarchive, onD
 
             {form.values.reminder_enabled && (
               <MultiSelect
-                label="Reminder timing"
-                placeholder="Choose reminder windows"
+                label={t('billModal.reminderTimingLabel')}
+                placeholder={t('billModal.reminderTimingPlaceholder')}
                 data={reminderDayOptions}
                 value={form.values.reminder_days}
                 onChange={(value) => form.setFieldValue('reminder_days', value)}
@@ -537,8 +549,8 @@ export function BillModal({ opened, onClose, onSave, onArchive, onUnarchive, onD
             )}
 
             <Textarea
-              label="Notes"
-              placeholder="Confirmation details, renewal notes, cancellation terms..."
+              label={t('billModal.notesLabel')}
+              placeholder={t('billModal.notesPlaceholder')}
               autosize
               minRows={2}
               maxRows={5}
@@ -548,7 +560,7 @@ export function BillModal({ opened, onClose, onSave, onArchive, onUnarchive, onD
             {/* Share button for existing bills */}
             {bill && !bill.archived && (
               <>
-                <Divider label="Sharing" labelPosition="center" />
+                <Divider label={t('billModal.sharingLabel')} labelPosition="center" />
                 <Group justify="center">
                   <Button
                     variant="light"
@@ -556,7 +568,7 @@ export function BillModal({ opened, onClose, onSave, onArchive, onUnarchive, onD
                     leftSection={<IconShare size={16} />}
                     onClick={() => setShareModalOpen(true)}
                   >
-                    {billShares.length > 0 || (bill.share_count && bill.share_count > 0) ? 'Edit Bill Sharing' : 'Share Bill'}
+                    {billShares.length > 0 || (bill.share_count && bill.share_count > 0) ? t('billModal.editSharing') : t('billModal.shareBill')}
                   </Button>
                 </Group>
 
@@ -565,7 +577,7 @@ export function BillModal({ opened, onClose, onSave, onArchive, onUnarchive, onD
                   <Paper p="md" withBorder>
                     <Stack gap="xs">
                       <Text size="sm" fw={500}>
-                        Shared With ({billShares.length})
+                        {t('billModal.sharedWithCount', { count: billShares.length })}
                       </Text>
                       {billShares.map((share) => (
                         <Box key={share.id}>
@@ -573,15 +585,17 @@ export function BillModal({ opened, onClose, onSave, onArchive, onUnarchive, onD
                             <Text size="sm">{share.shared_with}</Text>
                             {share.recipient_paid_date ? (
                               <Badge size="sm" color="green" variant="filled">
-                                Paid on {new Date(share.recipient_paid_date).toLocaleDateString('en-US', {
-                                  month: 'short',
-                                  day: 'numeric',
-                                  year: 'numeric'
+                                {t('billModal.paidOn', {
+                                  date: new Date(share.recipient_paid_date).toLocaleDateString(getLocale(), {
+                                    month: 'short',
+                                    day: 'numeric',
+                                    year: 'numeric'
+                                  })
                                 })}
                               </Badge>
                             ) : (
                               <Badge size="sm" color="gray" variant="light">
-                                Not paid
+                                {t('billModal.notPaid')}
                               </Badge>
                             )}
                           </Group>
@@ -596,7 +610,7 @@ export function BillModal({ opened, onClose, onSave, onArchive, onUnarchive, onD
             {/* Archive/Delete actions for existing bills */}
             {bill && (onArchive || onUnarchive || onDelete) && (
               <>
-                <Divider label="Danger Zone" labelPosition="center" color="red" />
+                <Divider label={t('billModal.dangerZoneLabel')} labelPosition="center" color="red" />
                 <Group justify="center" gap="md">
                   {bill.archived && onUnarchive && (
                     <Button
@@ -604,7 +618,7 @@ export function BillModal({ opened, onClose, onSave, onArchive, onUnarchive, onD
                       color="green"
                       leftSection={<IconArchiveOff size={16} />}
                       onClick={async () => {
-                        if (window.confirm('Unarchive this bill? It will be restored to your active bills list.')) {
+                        if (window.confirm(t('billModal.unarchiveConfirm'))) {
                           setLoading(true);
                           try {
                             await onUnarchive(bill);
@@ -616,7 +630,7 @@ export function BillModal({ opened, onClose, onSave, onArchive, onUnarchive, onD
                       }}
                       disabled={loading}
                     >
-                      Unarchive
+                      {t('billModal.unarchive')}
                     </Button>
                   )}
                   {!bill.archived && onArchive && (
@@ -625,7 +639,7 @@ export function BillModal({ opened, onClose, onSave, onArchive, onUnarchive, onD
                       color="orange"
                       leftSection={<IconArchive size={16} />}
                       onClick={async () => {
-                        if (window.confirm('Archive this bill? It will be hidden from the main list but payment history will be preserved.')) {
+                        if (window.confirm(t('billModal.archiveConfirm'))) {
                           setLoading(true);
                           try {
                             await onArchive(bill);
@@ -637,7 +651,7 @@ export function BillModal({ opened, onClose, onSave, onArchive, onUnarchive, onD
                       }}
                       disabled={loading}
                     >
-                      Archive
+                      {t('billModal.archive')}
                     </Button>
                   )}
                   {onDelete && (
@@ -646,7 +660,7 @@ export function BillModal({ opened, onClose, onSave, onArchive, onUnarchive, onD
                       color="red"
                       leftSection={<IconTrash size={16} />}
                       onClick={async () => {
-                        if (window.confirm('PERMANENTLY DELETE this bill and ALL payment history? This cannot be undone!')) {
+                        if (window.confirm(t('billModal.deleteConfirm'))) {
                           setLoading(true);
                           try {
                             await onDelete(bill);
@@ -658,7 +672,7 @@ export function BillModal({ opened, onClose, onSave, onArchive, onUnarchive, onD
                       }}
                       disabled={loading}
                     >
-                      Delete Permanently
+                      {t('billModal.deletePermanently')}
                     </Button>
                   )}
                 </Group>
@@ -668,10 +682,10 @@ export function BillModal({ opened, onClose, onSave, onArchive, onUnarchive, onD
             {/* Actions */}
             <Group justify="flex-end" mt="md">
               <Button variant="default" onClick={onClose}>
-                Cancel
+                {t('common.actions.cancel')}
               </Button>
               <Button type="submit" loading={loading}>
-                {bill ? 'Update' : 'Add'} Bill
+                {bill ? t('billModal.updateBill') : t('billModal.addBill')}
               </Button>
             </Group>
           </Stack>

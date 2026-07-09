@@ -54,6 +54,15 @@ export function setCurrencyConfig(locale: string, currency: string): void {
   }
 }
 
+/**
+ * Current locale, for other locale-aware formatting (e.g. dates) that
+ * should follow the same DEFAULT_LOCALE config rather than tracking a
+ * second, independent locale value.
+ */
+export function getLocale(): string {
+  return currentLocale;
+}
+
 export function formatCurrency(value: number | null | undefined): string {
   return formatter.format(value ?? 0);
 }
