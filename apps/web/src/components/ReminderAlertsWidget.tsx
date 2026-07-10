@@ -52,31 +52,36 @@ export function ReminderAlertsWidget({ bills, hasDatabase, onPayBill }: Reminder
 
   return (
     <>
-      <Affix position={{ top: 76, right: 24 }} zIndex={210}>
-        <UnstyledButton onClick={open} aria-label={t('reminderAlertsWidget.openAriaLabel')}>
-          <Paper withBorder shadow="md" radius="md" px="sm" py="xs">
-            <Group gap="xs" wrap="nowrap">
-              <ThemeIcon color={color} variant="light" radius="xl" size="md">
-                <IconBellRinging size={18} />
-              </ThemeIcon>
-              <Stack gap={0}>
-                <Text size="sm" fw={700}>
-                  {t('reminderAlertsWidget.alertCount', { count: alerts.length })}
-                </Text>
-                <Text size="xs" c="dimmed">
-                  {t('reminderAlertsWidget.clickToReview')}
-                </Text>
-              </Stack>
-            </Group>
-          </Paper>
-        </UnstyledButton>
-      </Affix>
+      {!opened && (
+        <Affix position={{ bottom: 24, right: 24 }} zIndex={210}>
+          <UnstyledButton onClick={open} aria-label={t('reminderAlertsWidget.openAriaLabel')}>
+            <Paper withBorder shadow="md" radius="md" px="sm" py="xs">
+              <Group gap="xs" wrap="nowrap">
+                <ThemeIcon color={color} variant="light" radius="xl" size="md">
+                  <IconBellRinging size={18} />
+                </ThemeIcon>
+                <Stack gap={0}>
+                  <Text size="sm" fw={700}>
+                    {t('reminderAlertsWidget.alertCount', { count: alerts.length })}
+                  </Text>
+                  <Text size="xs" c="dimmed">
+                    {t('reminderAlertsWidget.clickToReview')}
+                  </Text>
+                </Stack>
+              </Group>
+            </Paper>
+          </UnstyledButton>
+        </Affix>
+      )}
 
       <Drawer
         opened={opened}
         onClose={close}
         position="right"
         size="md"
+        closeOnClickOutside={false}
+        closeOnEscape={false}
+        closeButtonProps={{ 'aria-label': t('reminderAlertsWidget.closeAriaLabel') }}
         title={t('reminderAlertsWidget.alertCount', { count: alerts.length })}
       >
         <Stack gap="sm">

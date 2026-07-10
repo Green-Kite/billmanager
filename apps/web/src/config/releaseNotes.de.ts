@@ -2,6 +2,27 @@ import type { ReleaseNote } from './releaseNotes';
 
 export const germanReleaseNotes: ReleaseNote[] = [
   {
+    version: '4.3.0',
+    date: '2026-07-10',
+    title: 'Internationalisierung und Flexibilität für Self-Hosting',
+    sections: [
+      {
+        heading: 'Neue Funktionen',
+        items: [
+          'Wählen Sie in den Einstellungen Englisch oder Deutsch; Oberflächentexte, Datumsangaben, Exporte und Druckausgaben folgen der gewählten Sprache',
+          'Selbst gehostete Installationen können DEFAULT_CURRENCY und DEFAULT_LOCALE setzen, um Beträge für ihre Region zu formatieren',
+        ],
+      },
+      {
+        heading: 'Verbesserungen',
+        items: [
+          'Erinnerungen befinden sich jetzt unten rechts und werden ausgeblendet, solange ihre Seitenschublade geöffnet ist',
+          'Web- und Mobile-Bibliotheken, Python-Werkzeuge sowie die unterstützten Node.js- und PostgreSQL-Laufzeiten wurden aktualisiert',
+        ],
+      },
+    ],
+  },
+  {
     version: '4.2.2',
     date: '2026-07-08',
     title: 'Analyse-Arbeitsbereich und Leistungsupdate',

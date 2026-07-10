@@ -356,6 +356,7 @@
   },
   "reminderAlertsWidget": {
     "openAriaLabel": "Open reminder alerts",
+    "closeAriaLabel": "Close reminder alerts",
     "alertCount_one": "{{count}} Reminder Alert",
     "alertCount_other": "{{count}} Reminder Alerts",
     "clickToReview": "Click to review"
