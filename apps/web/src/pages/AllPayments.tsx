@@ -370,8 +370,8 @@ export function AllPayments() {
                   searchName && `"${searchName}"`,
                   dateFrom && `from ${formatDateString(formatDateForAPI(dateFrom))}`,
                   dateTo && `to ${formatDateString(formatDateForAPI(dateTo))}`,
-                  amountMin !== '' && `min ${getCurrencySymbol()}${amountMin}`,
-                  amountMax !== '' && `max ${getCurrencySymbol()}${amountMax}`,
+                  amountMin !== '' && `min ${formatCurrency(Number(amountMin))}`,
+                  amountMax !== '' && `max ${formatCurrency(Number(amountMax))}`,
                 ].filter(Boolean).join(', ')}
               </Text>
               <Badge size="sm" variant="light" color="blue">
