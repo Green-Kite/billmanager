@@ -4128,9 +4128,19 @@ def jwt_get_bill(bill_id):
 
     bill = db.get_or_404(Bill, bill_id)
 
-    access = check_bill_access(bill)
-    if access is not True:
-        return access
+    # Check access: either owns the bill's database OR has an accepted share
+    has_access = check_bill_access(bill) is True
+    share = None
+    if not has_access:
+        share = BillShare.query.filter_by(
+            bill_id=bill_id, shared_with_user_id=g.jwt_user_id, status="accepted"
+        ).first()
+        has_access = share is not None
+
+    if not has_access:
+        return jsonify({"success": False, "error": "Access denied"}), 403
+
+    database = db.session.get(Database, bill.database_id)
 
     b_dict = {
         "id": bill.id,
@@ -4150,7 +4160,28 @@ def jwt_get_bill(bill_id):
         "reminder_enabled": bill.reminder_enabled,
         "reminder_days": parse_reminder_days(bill.reminder_days),
         "archived": bill.archived,
+        "database_id": bill.database_id,
+        "database_name": database.display_name if database else "Unknown",
     }
+
+    if share:
+        my_portion = None
+        if share.split_type and bill.amount is not None:
+            my_portion = share.calculate_portion()
+        owner = db.session.get(User, database.owner_id) if database else None
+        b_dict["is_shared"] = True
+        b_dict["share_info"] = {
+            "share_id": share.id,
+            "owner_name": owner.username if owner else "Unknown",
+            "my_portion": my_portion,
+            "my_portion_paid": share.is_recipient_paid,
+            "my_portion_paid_date": share.recipient_paid_date.isoformat()
+            if share.recipient_paid_date
+            else None,
+        }
+    else:
+        b_dict["is_shared"] = False
+
     if bill.is_variable:
         avg = (
             db.session.query(func.avg(Payment.amount))

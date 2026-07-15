@@ -60,6 +60,54 @@ class TestBillsCRUD:
         assert data.get('success') is True
         assert data['data']['name'] == 'Test Bill'
 
+    def test_get_single_bill_includes_database_and_share_fields(self, client, auth_headers_with_db, test_bill, test_database):
+        """Regression: jwt_get_bill omitted database_id/database_name/is_shared
+        that the list endpoint (and mobile's BillDetailScreen) rely on."""
+        response = client.get(f'/api/v2/bills/{test_bill.id}',
+                              headers=auth_headers_with_db)
+        data = json.loads(response.data)['data']
+        assert data['database_id'] == test_database.id
+        assert data['database_name'] == test_database.display_name
+        assert data['is_shared'] is False
+
+    def test_get_single_bill_accessible_to_share_recipient(
+        self, client, user_auth_headers, db_session, test_bill, admin_user, regular_user
+    ):
+        """Regression: a share recipient (not a database member) got a 403 on
+        GET /bills/<id> - the route only had check_bill_access (owner-only),
+        never the accepted-share fallback that /payments and /pay already had.
+        """
+        recipient_db = Database(
+            name='recipientdb2', display_name='Recipient DB', owner_id=regular_user.id
+        )
+        db_session.add(recipient_db)
+        db_session.commit()
+        regular_user.accessible_databases.append(recipient_db)
+        db_session.commit()
+
+        share = BillShare(
+            bill_id=test_bill.id,
+            owner_user_id=admin_user.id,
+            shared_with_user_id=regular_user.id,
+            shared_with_identifier=regular_user.username,
+            identifier_type='username',
+            status='accepted',
+            split_type='equal',
+            accepted_at=datetime.datetime.now(datetime.timezone.utc),
+        )
+        db_session.add(share)
+        db_session.commit()
+
+        recipient_headers = user_auth_headers.copy()
+        recipient_headers['X-Database'] = recipient_db.name
+
+        response = client.get(f'/api/v2/bills/{test_bill.id}', headers=recipient_headers)
+        assert response.status_code == 200
+        data = json.loads(response.data)['data']
+        assert data['is_shared'] is True
+        assert data['share_info']['share_id'] == share.id
+        assert data['share_info']['owner_name'] == admin_user.username
+
     def test_update_bill(self, client, auth_headers_with_db, test_bill):
         """Test updating a bill."""
         response = client.put(f'/api/v2/bills/{test_bill.id}',
