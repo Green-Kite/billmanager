@@ -1,0 +1,39 @@
+appId: com.brdweb.billmanager
+name: iOS authentication entry and recovery navigation
+tags:
+  - ios
+  - auth
+  - smoke
+---
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible:
+      id: auth-login-screen
+    timeout: 30000
+- assertVisible:
+    text: Username
+- assertVisible:
+    text: Password
+- tapOn:
+    text: Forgot password?
+- extendedWaitUntil:
+    visible:
+      id: auth-forgot-screen
+    timeout: 10000
+- assertVisible:
+    text: Send reset link
+- assertVisible:
+    text: Back to sign in
+- tapOn:
+    text: Back to sign in
+- assertVisible:
+    id: auth-login-screen
+- scrollUntilVisible:
+    element:
+      text: Change server
+    direction: DOWN
+    timeout: 10000
+    visibilityPercentage: 80
+- assertVisible:
+    text: Change server

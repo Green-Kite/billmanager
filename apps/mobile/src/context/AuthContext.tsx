@@ -1,9 +1,27 @@
-import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
-import * as SecureStore from 'expo-secure-store';
-import { api } from '../api/client';
-import { User, DatabaseInfo } from '../types';
+import React, {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+} from 'react';
 
-const SERVER_TYPE_KEY = 'billmanager_server_type';
+import { api } from '../api/client';
+import { SQLiteAuthSessionStore } from '../data/authSessionRepository';
+import {
+  authenticatedSessionFromPayload,
+  canUseCachedSession,
+  type AuthenticatedSessionSnapshot,
+} from '../services/authSession';
+import type { AuthFlowResult, AuthSessionScope } from '../features/auth';
+import type { DatabaseInfo, User } from '../types';
+import {
+  AuthOperationGuard,
+  SerializedAuthSessionWrites,
+  type AuthOperationToken,
+  type DatabaseOperationToken,
+} from './authOperationGuard';
 
 type ServerType = 'cloud' | 'self-hosted' | 'local-dev';
 
@@ -22,271 +40,377 @@ interface AuthContextType extends AuthState {
   selectDatabase: (dbName: string) => Promise<void>;
   refreshDatabases: () => Promise<void>;
   refreshUserInfo: () => Promise<void>;
+  adoptAuthenticatedSession: (
+    result: Extract<AuthFlowResult, { status: 'authenticated' }>,
+  ) => Promise<{ success: boolean; error?: string }>;
+  finalizeAccountDeletion: (scope: AuthSessionScope) => Promise<void>;
   isSelfHosted: boolean;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
+const authSessionStore = new SQLiteAuthSessionStore();
 
-export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [state, setState] = useState<AuthState>({
-    isLoading: true,
+function serverTypeForActiveProfile(): ServerType {
+  switch (api.getActiveProfile().deploymentMode) {
+    case 'self_hosted':
+      return 'self-hosted';
+    case 'development':
+      return 'local-dev';
+    default:
+      return 'cloud';
+  }
+}
+
+function anonymousState(serverType = serverTypeForActiveProfile()): AuthState {
+  return {
+    isLoading: false,
     isAuthenticated: false,
     user: null,
     databases: [],
     currentDatabase: null,
-    serverType: 'cloud',
-  });
+    serverType,
+  };
+}
 
-  // Initialize on mount
-  useEffect(() => {
-    initializeAuth();
+function authenticatedState(
+  snapshot: AuthenticatedSessionSnapshot,
+  serverType = serverTypeForActiveProfile(),
+): AuthState {
+  return {
+    isLoading: false,
+    isAuthenticated: true,
+    user: snapshot.user,
+    databases: snapshot.databases,
+    currentDatabase: snapshot.currentDatabase,
+    serverType,
+  };
+}
+
+export function AuthProvider({ children }: { children: React.ReactNode }) {
+  const [state, setState] = useState<AuthState>({
+    ...anonymousState(),
+    isLoading: true,
+  });
+  const stateRef = useRef(state);
+  const mountedRef = useRef(true);
+  const providerProfileIdRef = useRef(api.getActiveProfile().id);
+  const operationGuardRef = useRef(new AuthOperationGuard());
+  const sessionWritesRef = useRef(new SerializedAuthSessionWrites());
+
+  const replaceState = useCallback((next: AuthState) => {
+    if (!mountedRef.current) return;
+    stateRef.current = next;
+    setState(next);
   }, []);
 
-  const loadServerType = async (): Promise<ServerType> => {
-    try {
-      const savedType = await SecureStore.getItemAsync(SERVER_TYPE_KEY) as ServerType | null;
-      return savedType || 'cloud';
-    } catch {
-      return 'cloud';
+  const updateState = useCallback((update: (previous: AuthState) => AuthState) => {
+    if (!mountedRef.current) return;
+    const next = update(stateRef.current);
+    stateRef.current = next;
+    setState(next);
+  }, []);
+
+  const isAuthCurrent = useCallback((token: AuthOperationToken) => (
+    mountedRef.current
+    && token.profileId === providerProfileIdRef.current
+    && operationGuardRef.current.isAuthCurrent(token, api.getActiveProfile().id)
+  ), []);
+
+  const isDatabaseCurrent = useCallback((token: DatabaseOperationToken) => (
+    mountedRef.current
+    && operationGuardRef.current.isDatabaseCurrent(token, api.captureAuthSessionScope())
+  ), []);
+
+  const serializeSessionWrite = useCallback(<T,>(operation: () => Promise<T>) => (
+    sessionWritesRef.current.run(operation)
+  ), []);
+
+  const prepareSnapshot = useCallback(async (
+    token: AuthOperationToken,
+    snapshot: AuthenticatedSessionSnapshot,
+  ): Promise<AuthenticatedSessionSnapshot | null> => {
+    if (!isAuthCurrent(token)) return null;
+    if (!api.getCurrentDatabase() && snapshot.currentDatabase) {
+      const selection = operationGuardRef.current.beginDatabaseSelection(
+        token.profileId,
+        snapshot.currentDatabase,
+      );
+      await api.setCurrentDatabase(snapshot.currentDatabase, {
+        serverProfileId: token.profileId,
+        databaseId: null,
+      });
+      if (!isDatabaseCurrent(selection)) return null;
     }
-  };
+    if (!isAuthCurrent(token)) return null;
+    return {
+      ...snapshot,
+      currentDatabase: api.getCurrentDatabase(),
+    };
+  }, [isAuthCurrent, isDatabaseCurrent]);
 
-  const initializeAuth = async () => {
-    try {
-      const [hasToken, serverType] = await Promise.all([
-        api.initialize(),
-        loadServerType(),
-      ]);
+  const saveSnapshot = useCallback(async (
+    token: AuthOperationToken,
+    snapshot: AuthenticatedSessionSnapshot,
+  ): Promise<boolean> => serializeSessionWrite(async () => {
+    if (!isAuthCurrent(token)) return false;
+    await authSessionStore.save(token.profileId, snapshot);
+    return isAuthCurrent(token);
+  }), [isAuthCurrent, serializeSessionWrite]);
 
-      if (__DEV__) {
-        console.log('[AuthContext] initializeAuth - hasToken:', hasToken, 'serverType:', serverType);
-      }
+  useEffect(() => () => {
+    mountedRef.current = false;
+  }, []);
 
-      if (hasToken) {
-        // Verify token is still valid by fetching user info
-        const response = await api.getUserInfo();
-
-        let userData: User | null = null;
-        let databases: DatabaseInfo[] = [];
-        let currentDb: string | null = null;
-
-        if (response.success && response.data) {
-          // Check for nested user object (New Server)
-          if (response.data.user) {
-             userData = {
-              id: response.data.user.id,
-              username: response.data.user.username,
-              email: response.data.user.email,
-              role: response.data.user.role,
-              is_account_owner: response.data.user.is_account_owner,
-            };
-            databases = response.data.databases || [];
-            currentDb = api.getCurrentDatabase();
-          } 
-          // Check for flat user properties (Legacy/Cloud Server)
-          else if ((response.data as any).username) {
-             const data = response.data as any;
-             userData = {
-              id: data.id,
-              username: data.username,
-              email: data.email,
-              role: data.role,
-              is_account_owner: data.is_account_owner,
-            };
-            databases = data.databases || [];
-            currentDb = data.current_db || api.getCurrentDatabase();
-          }
-        }
-
-        if (userData) {
-          if (__DEV__) {
-            console.log('[AuthContext] initializeAuth - User authenticated:', userData.username);
-          }
-          setState({
-            isLoading: false,
-            isAuthenticated: true,
-            user: userData,
-            databases: databases,
-            currentDatabase: currentDb,
-            serverType,
-          });
+  useEffect(() => {
+    void (async () => {
+      const serverType = serverTypeForActiveProfile();
+      const profileId = api.getActiveProfile().id;
+      const authOperation = operationGuardRef.current.captureAuth(profileId);
+      try {
+        // ServerProfileProvider owns API initialization and profile activation.
+        // Re-initializing here can race a live /config verification and make a
+        // same-profile response look stale. The keyed provider is mounted only
+        // after the active profile and its credentials have been applied.
+        const hasToken = api.hasActiveAccessToken();
+        if (!hasToken) {
+          if (isAuthCurrent(authOperation)) replaceState(anonymousState(serverType));
           return;
-        } else {
-          if (__DEV__) {
-            console.log('[AuthContext] initializeAuth - No user in response, clearing auth');
+        }
+
+        const sessionScope = {
+          serverProfileId: profileId,
+          databaseId: api.getCurrentDatabase(),
+        };
+        const cachedPromise = authSessionStore.get(profileId).catch(() => null);
+        const response = await api.getUserInfo(sessionScope);
+        if (response.success && response.data) {
+          const live = authenticatedSessionFromPayload(
+            response.data,
+            sessionScope.databaseId,
+          );
+          if (live) {
+            const prepared = await prepareSnapshot(authOperation, live);
+            if (
+              prepared
+              && await saveSnapshot(authOperation, prepared)
+              && isAuthCurrent(authOperation)
+            ) {
+              replaceState(authenticatedState(prepared, serverType));
+            }
+            return;
           }
         }
-      }
 
-      setState({
-        isLoading: false,
-        isAuthenticated: false,
-        user: null,
-        databases: [],
-        currentDatabase: null,
-        serverType,
-      });
-    } catch (error) {
-      if (__DEV__) {
-        console.error('Auth initialization error:', error);
-      }
-      const serverType = await loadServerType();
-      setState({
-        isLoading: false,
-        isAuthenticated: false,
-        user: null,
-        databases: [],
-        currentDatabase: null,
-        serverType,
-      });
-    }
-  };
+        const cached = await cachedPromise;
+        if (cached && canUseCachedSession(hasToken, response.httpStatus)) {
+          const prepared = await prepareSnapshot(authOperation, cached);
+          if (
+            prepared
+            && await saveSnapshot(authOperation, prepared)
+            && isAuthCurrent(authOperation)
+          ) {
+            replaceState(authenticatedState(prepared, serverType));
+          }
+          return;
+        }
 
-  // Set up auth error handler to trigger logout
+        if (response.httpStatus === 401 || response.httpStatus === 403) {
+          operationGuardRef.current.invalidateAuthentication(profileId);
+          replaceState(anonymousState(serverType));
+          const clearSnapshot = serializeSessionWrite(() => (
+            authSessionStore.clear(profileId).catch(() => undefined)
+          ));
+          await Promise.all([api.logout(sessionScope), clearSnapshot]);
+          return;
+        }
+        if (isAuthCurrent(authOperation)) replaceState(anonymousState(serverType));
+      } catch (error) {
+        if (__DEV__) console.error('Auth initialization error:', error);
+        if (isAuthCurrent(authOperation)) replaceState(anonymousState(serverType));
+      }
+    })();
+  }, [
+    isAuthCurrent,
+    prepareSnapshot,
+    replaceState,
+    saveSnapshot,
+    serializeSessionWrite,
+  ]);
+
   useEffect(() => {
     api.setAuthErrorHandler(() => {
-      setState(prev => ({
-        ...prev,
-        isLoading: false,
-        isAuthenticated: false,
-        user: null,
-        databases: [],
-        currentDatabase: null,
-      }));
+      if (!mountedRef.current) return;
+      const profileId = providerProfileIdRef.current;
+      if (api.getActiveProfile().id !== profileId) return;
+      operationGuardRef.current.invalidateAuthentication(profileId);
+      replaceState(anonymousState());
+      void serializeSessionWrite(() => (
+        authSessionStore.clear(profileId).catch(() => undefined)
+      ));
     });
-  }, []);
+    return () => api.setAuthErrorHandler(null);
+  }, [replaceState, serializeSessionWrite]);
 
   const login = useCallback(async (username: string, password: string) => {
+    const profileId = api.getActiveProfile().id;
+    const authOperation = operationGuardRef.current.captureAuth(profileId);
     try {
-      // First, login to get tokens
       const loginResponse = await api.login(username, password);
-      if (__DEV__) {
-        console.log('[AuthContext] Login response success:', loginResponse.success);
-      }
-
-      if (!loginResponse.success) {
+      if (!loginResponse.success || !loginResponse.data) {
         return { success: false, error: loginResponse.error || 'Login failed' };
       }
 
-      // The login response includes user info, use it directly
-      const serverType = await loadServerType();
+      const scope = loginResponse.scope;
+      if (!scope) return { success: false, error: 'Login scope was not returned.' };
+      const snapshot = authenticatedSessionFromPayload(
+        loginResponse.data,
+        scope.databaseId,
+      );
+      if (!snapshot) return { success: false, error: 'Failed to get user info' };
 
-      // Fetch user info from /me endpoint after login
-      const userInfoResponse = await api.getUserInfo();
-
-      let userData: User | null = null;
-      let databases: DatabaseInfo[] = [];
-      let currentDb: string | null = null;
-
-      if (userInfoResponse.success && userInfoResponse.data) {
-          if (userInfoResponse.data.user) {
-            userData = {
-              id: userInfoResponse.data.user.id,
-              username: userInfoResponse.data.user.username,
-              email: userInfoResponse.data.user.email,
-              role: userInfoResponse.data.user.role,
-              is_account_owner: userInfoResponse.data.user.is_account_owner,
-            };
-            databases = userInfoResponse.data.databases || [];
-            currentDb = userInfoResponse.data.databases?.[0]?.name || null;
-          } else if ((userInfoResponse.data as any).username) {
-            const data = userInfoResponse.data as any;
-            userData = {
-              id: data.id,
-              username: data.username,
-              email: data.email,
-              role: data.role,
-              is_account_owner: data.is_account_owner,
-            };
-            databases = data.databases || [];
-            currentDb = data.current_db || data.databases?.[0]?.name || null;
-          }
+      if (!isAuthCurrent(authOperation) || scope.serverProfileId !== profileId) {
+        return { success: false, error: 'The server changed while sign-in was completing.' };
       }
-
-      if (userData) {
-        setState({
-          isLoading: false,
-          isAuthenticated: true,
-          user: userData,
-          databases: databases,
-          currentDatabase: currentDb,
-          serverType,
-        });
-        return { success: true };
+      const prepared = await prepareSnapshot(authOperation, snapshot);
+      if (!prepared || !await saveSnapshot(authOperation, prepared)) {
+        return { success: false, error: 'Sign-in was cancelled before it completed.' };
       }
-
-      if (__DEV__) {
-        console.error('[AuthContext] Failed to get user info from /me');
+      if (!isAuthCurrent(authOperation)) {
+        return { success: false, error: 'Sign-in was cancelled before it completed.' };
       }
-      return { success: false, error: 'Failed to get user info' };
+      replaceState(authenticatedState(prepared));
+      return { success: true };
     } catch (error) {
-      if (__DEV__) {
-        console.error('[AuthContext] Login error:', error);
-      }
+      if (__DEV__) console.error('[AuthContext] Login error:', error);
       return { success: false, error: 'An unexpected error occurred' };
     }
-  }, []);
+  }, [isAuthCurrent, prepareSnapshot, replaceState, saveSnapshot]);
 
   const logout = useCallback(async () => {
-    await api.logout();
-    setState(prev => ({
-      ...prev,
-      isLoading: false,
-      isAuthenticated: false,
-      user: null,
-      databases: [],
-      currentDatabase: null,
-    }));
-  }, []);
+    const scope = api.captureAuthSessionScope();
+    operationGuardRef.current.invalidateAuthentication(scope.serverProfileId);
+    replaceState(anonymousState());
+    const clearSnapshot = serializeSessionWrite(() => (
+      authSessionStore.clear(scope.serverProfileId).catch(() => undefined)
+    ));
+    await Promise.all([api.logout(scope), clearSnapshot]);
+  }, [replaceState, serializeSessionWrite]);
+
+  const finalizeAccountDeletion = useCallback(async (scope: AuthSessionScope) => {
+    operationGuardRef.current.invalidateAuthentication(scope.serverProfileId);
+    if (api.getActiveProfile().id === scope.serverProfileId) {
+      replaceState(anonymousState());
+    }
+    await serializeSessionWrite(() => (
+      authSessionStore.clear(scope.serverProfileId).catch(() => undefined)
+    ));
+  }, [replaceState, serializeSessionWrite]);
 
   const refreshUserInfo = useCallback(async () => {
-    const response = await api.getUserInfo();
-    let userData: User | null = null;
-    let databases: DatabaseInfo[] = [];
-
-    if (response.success && response.data) {
-        if (response.data.user) {
-            userData = {
-                id: response.data.user.id,
-                username: response.data.user.username,
-                email: response.data.user.email,
-                role: response.data.user.role,
-                is_account_owner: response.data.user.is_account_owner,
-            };
-            databases = response.data.databases || [];
-        } else if ((response.data as any).username) {
-            const data = response.data as any;
-            userData = {
-                id: data.id,
-                username: data.username,
-                email: data.email,
-                role: data.role,
-                is_account_owner: data.is_account_owner,
-            };
-            databases = data.databases || [];
-        }
-    }
-
-    if (userData) {
-      setState(prev => ({
-        ...prev,
-        user: userData,
-        databases: databases,
-      }));
-    }
-  }, []);
+    const scope = api.captureAuthSessionScope();
+    const authOperation = operationGuardRef.current.captureAuth(scope.serverProfileId);
+    const databaseOperation = operationGuardRef.current.captureDatabase(scope);
+    const response = await api.getUserInfo(scope);
+    if (!response.success || !response.data || !isAuthCurrent(authOperation)) return;
+    const snapshot = authenticatedSessionFromPayload(
+      response.data,
+      api.getCurrentDatabase(),
+    );
+    if (!snapshot) return;
+    const persisted = await serializeSessionWrite(async () => {
+      if (!isAuthCurrent(authOperation)) return false;
+      if (!isDatabaseCurrent(databaseOperation)) return true;
+      await authSessionStore.save(scope.serverProfileId, {
+        ...snapshot,
+        currentDatabase: api.getCurrentDatabase(),
+        updatedAt: new Date().toISOString(),
+      });
+      return isAuthCurrent(authOperation) && isDatabaseCurrent(databaseOperation);
+    });
+    if (!persisted || !isAuthCurrent(authOperation)) return;
+    const selectionUnchanged = isDatabaseCurrent(databaseOperation);
+    updateState((previous) => ({
+      ...previous,
+      isLoading: false,
+      isAuthenticated: true,
+      user: snapshot.user,
+      databases: snapshot.databases,
+      currentDatabase: selectionUnchanged
+        ? api.getCurrentDatabase()
+        : previous.currentDatabase,
+    }));
+  }, [isAuthCurrent, isDatabaseCurrent, serializeSessionWrite, updateState]);
 
   const selectDatabase = useCallback(async (dbName: string) => {
-    await api.setCurrentDatabase(dbName);
-    setState(prev => ({ ...prev, currentDatabase: dbName }));
-  }, []);
+    const scope = api.captureAuthSessionScope();
+    const selection = operationGuardRef.current.beginDatabaseSelection(
+      scope.serverProfileId,
+      dbName,
+    );
+    await api.setCurrentDatabase(dbName, scope);
+    if (!isDatabaseCurrent(selection)) return;
+    const persisted = await serializeSessionWrite(async () => {
+      if (!isDatabaseCurrent(selection)) return false;
+      await authSessionStore
+        .setCurrentDatabase(scope.serverProfileId, dbName)
+        .catch(() => undefined);
+      return isDatabaseCurrent(selection);
+    });
+    if (!persisted || !isDatabaseCurrent(selection)) return;
+    updateState((previous) => ({ ...previous, currentDatabase: dbName }));
+  }, [isDatabaseCurrent, serializeSessionWrite, updateState]);
 
   const refreshDatabases = useCallback(async () => {
-    const response = await api.getAccounts();
-    if (response.success && response.data) {
-      setState(prev => ({ ...prev, databases: response.data! }));
+    const scope = api.captureAuthSessionScope();
+    const authOperation = operationGuardRef.current.captureAuth(scope.serverProfileId);
+    const databaseOperation = operationGuardRef.current.captureDatabase(scope);
+    const response = await api.getAccounts(scope);
+    if (!response.success || !response.data || !isAuthCurrent(authOperation)) return;
+    const databases = response.data;
+    await serializeSessionWrite(async () => {
+      if (!isAuthCurrent(authOperation)) return;
+      if (!isDatabaseCurrent(databaseOperation)) return;
+      const current = stateRef.current;
+      if (!current.user) return;
+      await authSessionStore.save(scope.serverProfileId, {
+        user: current.user,
+        databases,
+        currentDatabase: api.getCurrentDatabase(),
+        updatedAt: new Date().toISOString(),
+      });
+    });
+    if (!isAuthCurrent(authOperation)) return;
+    updateState((previous) => ({ ...previous, databases }));
+  }, [isAuthCurrent, isDatabaseCurrent, serializeSessionWrite, updateState]);
+
+  const adoptAuthenticatedSession = useCallback(async (
+    result: Extract<AuthFlowResult, { status: 'authenticated' }>,
+  ) => {
+    const profileId = api.getActiveProfile().id;
+    const authOperation = operationGuardRef.current.captureAuth(profileId);
+    const snapshot = authenticatedSessionFromPayload(
+      result.session,
+      result.scope.databaseId,
+    );
+    if (!snapshot) {
+      return { success: false, error: 'The server did not return an authenticated user.' };
     }
-  }, []);
+    if (!isAuthCurrent(authOperation) || result.scope.serverProfileId !== profileId) {
+      return {
+        success: false,
+        error: 'The server changed while sign-in was completing.',
+      };
+    }
+    const prepared = await prepareSnapshot(authOperation, snapshot);
+    if (!prepared || !await saveSnapshot(authOperation, prepared)) {
+      return { success: false, error: 'Sign-in was cancelled before it completed.' };
+    }
+    if (!isAuthCurrent(authOperation)) {
+      return { success: false, error: 'Sign-in was cancelled before it completed.' };
+    }
+    replaceState(authenticatedState(prepared));
+    return { success: true };
+  }, [isAuthCurrent, prepareSnapshot, replaceState, saveSnapshot]);
 
   const isSelfHosted = state.serverType === 'self-hosted' || state.serverType === 'local-dev';
 
@@ -299,6 +423,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         selectDatabase,
         refreshDatabases,
         refreshUserInfo,
+        adoptAuthenticatedSession,
+        finalizeAccountDeletion,
         isSelfHosted,
       }}
     >

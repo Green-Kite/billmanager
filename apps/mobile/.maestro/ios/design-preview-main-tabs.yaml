@@ -1,0 +1,35 @@
+appId: com.brdweb.billmanager
+name: iOS native primary tab navigation
+tags:
+  - ios
+  - preview
+  - smoke
+---
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible:
+      text: Overview
+    timeout: 30000
+- assertVisible:
+    text: Home
+- tapOn:
+    text: ^Bills$
+- assertVisible:
+    text: Search bills
+- tapOn:
+    text: ^Calendar$
+- assertVisible:
+    text: Calendar range
+- tapOn:
+    text: ^Insights$
+- assertVisible:
+    text: Financial outlook
+- tapOn:
+    text: ^Settings$
+- assertVisible:
+    text: Language & region
+- tapOn:
+    text: ^Home$
+- assertVisible:
+    text: Overview

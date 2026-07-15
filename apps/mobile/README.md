@@ -1,84 +1,67 @@
-# BillManager Mobile App
+# BillManager Mobile
 
-React Native app built with Expo for Android/iOS.
+BillManager Mobile is the React Native client for iOS and Android. It uses Expo development builds, Continuous Native Generation (CNG), and local Expo modules. Expo Go is not a supported runtime because the application depends on SQLCipher, passkeys, widgets, local notification actions, and other native capabilities.
 
-## Development Setup
+The rewrite is under active development. The code contains the new native-adaptive application and offline foundation, but it has not passed the complete device, store, and parity gates required for a public release.
 
-### Prerequisites
-- Node.js 24.18.0 LTS
-- npm or yarn
-- Expo Go app (for physical device) OR Android Studio (for emulator)
+## Documentation
 
-### Install Dependencies
+- [Implementation status and release gates](docs/implementation-status.md)
+- [Development builds, CNG, EAS, and Mac workflow](docs/development-builds.md)
+- [HTTPS, private CA, synchronization, reminder, and widget behavior](docs/runtime-and-deployment.md)
+- [Migration from the internal alpha](docs/alpha-migration.md)
+- [Maestro Android and iOS device-flow gates](.maestro/README.md)
+
+## Quick start
+
+Prerequisites:
+
+- Node.js 24.18.0
+- npm
+- an installed BillManager development client or a local Android/iOS native toolchain
+- an Expo account for EAS builds
+
 ```bash
-npm install
-```
-
-### Start Development Server
-```bash
+cd apps/mobile
+npm ci
 npm start
 ```
 
-## Testing Options
+`npm start` runs Metro for a development client. It does not produce an Expo Go-compatible QR code. See the [development build guide](docs/development-builds.md) to create or install a client.
 
-### Option 1: Physical Device (Recommended for quick testing)
-1. Install "Expo Go" from Play Store (Android) or App Store (iOS)
-2. Ensure your phone and computer are on the same WiFi network
-3. Run `npm start` and scan the QR code with Expo Go
+Run the mobile verification suite with:
 
-### Option 2: Android Emulator
-1. Install Android Studio from https://developer.android.com/studio
-2. Open Android Studio → More Actions → Virtual Device Manager
-3. Create a virtual device (Pixel 6 or similar recommended)
-4. Start the emulator
-5. Run `npm run android`
-
-### Option 3: Web (Limited functionality)
 ```bash
-npm run web
-```
-Note: Some features like SecureStore won't work on web.
-
-## API Configuration
-
-The app connects to different backends based on environment:
-
-| Environment | API URL |
-|-------------|---------|
-| Development (emulator) | `http://10.0.2.2:5001/api/v2` |
-| Development (physical) | Update IP in `src/api/client.ts` |
-| Production | `https://app.billmanager.app/api/v2` |
-
-### Testing with Physical Device
-If using a physical device, update `src/api/client.ts`:
-```typescript
-const API_BASE_URL = __DEV__
-  ? 'http://YOUR_COMPUTER_IP:5001/api/v2'  // Replace with your IP
-  : 'https://app.billmanager.app/api/v2';
+npm run check
 ```
 
-Find your IP: `ip addr | grep "inet 192"`
+This synchronizes the web translation catalogs, checks generated OpenAPI drift, runs ESLint, TypeScript, and unit tests, validates Maestro flow definitions and native build-profile transport policy, checks Expo package compatibility, and runs Expo Doctor. Device execution remains a separate release-candidate gate documented in the Maestro guide.
 
-## Project Structure
-```
+## Source-of-truth rules
+
+- `package.json` owns the public application version.
+- `app.config.ts` owns bundle identifiers, application identifiers, entitlements, plugins, runtime policy, and release-build transport restrictions.
+- `eas.json` owns repeatable development, preview, and production build profiles.
+- `../server/openapi.yaml` owns the generated API schema in `src/api/generated/schema.ts`.
+- `../web/src/i18n/locales` owns shared English and German translation catalogs; `npm run i18n:sync` copies them into the mobile catalog.
+- `ios/` and `android/` are generated and ignored. Make durable native changes through Expo config, config plugins, `widgets/`, or `modules/`, then regenerate with `npm run prebuild`.
+
+## Architecture map
+
+```text
 src/
-├── api/
-│   └── client.ts       # API client with auth handling
-├── context/
-│   └── AuthContext.tsx # Authentication state management
-├── navigation/
-│   └── AppNavigator.tsx # Navigation configuration
-├── screens/
-│   ├── LoginScreen.tsx
-│   ├── BillsScreen.tsx
-│   └── SettingsScreen.tsx
-└── types/
-    └── index.ts        # TypeScript type definitions
-```
+├── api/            # profile-scoped API client, capabilities, generated contract
+├── context/        # session, active profile, theme, app lock, live mobile runtime
+├── data/           # SQLCipher schema and repositories
+├── domain/         # profile, synchronization, and compatibility types
+├── features/       # auth, bills, payments, calendar, analytics, collaboration, admin
+├── native/         # reminders, background sync, exports, app lock, widget snapshots
+├── navigation/     # five-tab, deep-link-aware adaptive navigation
+└── services/       # alpha migration, outbox processing, conflict mapping
 
-## Backend Requirements
-Run the Flask backend locally:
-```bash
-cd ../billmanager/server
-DATABASE_URL=postgresql://billsuser:billspass@192.168.40.113:5432/bills_test FLASK_RUN_PORT=5001 python app.py
+modules/
+├── billmanager-passkeys/ # AuthenticationServices and Credential Manager adapter
+└── billmanager-widget/   # Android Jetpack Glance widget adapter
+
+widgets/                  # iOS WidgetKit/Expo Widgets implementation
 ```

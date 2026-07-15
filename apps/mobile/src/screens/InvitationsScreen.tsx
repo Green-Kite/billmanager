@@ -14,15 +14,18 @@ import {
 } from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useFocusEffect } from '@react-navigation/native';
+import { useTranslation } from 'react-i18next';
 import { api } from '../api/client';
 import { useTheme } from '../context/ThemeContext';
 import { useAuth } from '../context/AuthContext';
 import { useConfig } from '../context/ConfigContext';
+import { formatDate } from '../i18n/format';
 import { Invitation, DatabaseInfo } from '../types';
 
 type Props = NativeStackScreenProps<any, 'Invitations'>;
 
 export default function InvitationsScreen({ navigation }: Props) {
+  const { t } = useTranslation();
   const { colors } = useTheme();
   const { databases } = useAuth();
   const { emailEnabled } = useConfig();
@@ -45,15 +48,15 @@ export default function InvitationsScreen({ navigation }: Props) {
         setInvitations(response.data);
         setError(null);
       } else {
-        setError(response.error || 'Failed to load invitations');
+        setError(response.error || t('mobileParity.invitations.loadFailed'));
       }
     } catch (err) {
-      setError('Network error');
+      setError(t('mobileParity.common.networkError'));
     } finally {
       setIsLoading(false);
       setIsRefreshing(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     fetchInvitations();
@@ -72,12 +75,12 @@ export default function InvitationsScreen({ navigation }: Props) {
 
   const handleCreateInvitation = async () => {
     if (!email.trim()) {
-      Alert.alert('Error', 'Please enter an email address');
+      Alert.alert(t('mobileParity.common.error'), t('mobileParity.invitations.emailRequired'));
       return;
     }
 
     if (selectedDatabases.length === 0) {
-      Alert.alert('Error', 'Please select at least one bill group');
+      Alert.alert(t('mobileParity.common.error'), t('mobileParity.invitations.chooseGroup'));
       return;
     }
 
@@ -91,26 +94,26 @@ export default function InvitationsScreen({ navigation }: Props) {
       setRole('user');
       setSelectedDatabases([]);
       fetchInvitations();
-      Alert.alert('Success', 'Invitation sent');
+      Alert.alert(t('mobileParity.common.success'), t('mobileParity.invitations.sent'));
     } else {
-      Alert.alert('Error', result.error || 'Failed to send invitation');
+      Alert.alert(t('mobileParity.common.error'), result.error || t('mobileParity.invitations.sendFailed'));
     }
   };
 
   const handleResendInvitation = (invitation: Invitation) => {
     Alert.alert(
-      'Resend Invitation',
-      `Resend invitation to ${invitation.email}?`,
+      t('mobileParity.invitations.resendTitle'),
+      t('mobileParity.invitations.resendBody', { email: invitation.email }),
       [
-        { text: 'Cancel', style: 'cancel' },
+        { text: t('mobileParity.common.cancel'), style: 'cancel' },
         {
-          text: 'Resend',
+          text: t('mobileParity.invitations.resend'),
           onPress: async () => {
             const result = await api.resendInvitation(invitation.id);
             if (result.success) {
-              Alert.alert('Success', 'Invitation resent');
+              Alert.alert(t('mobileParity.common.success'), t('mobileParity.invitations.resent'));
             } else {
-              Alert.alert('Error', result.error || 'Failed to resend invitation');
+              Alert.alert(t('mobileParity.common.error'), result.error || t('mobileParity.invitations.resendFailed'));
             }
           },
         },
@@ -120,19 +123,19 @@ export default function InvitationsScreen({ navigation }: Props) {
 
   const handleDeleteInvitation = (invitation: Invitation) => {
     Alert.alert(
-      'Cancel Invitation',
-      `Cancel invitation for ${invitation.email}?`,
+      t('mobileParity.invitations.cancelTitle'),
+      t('mobileParity.invitations.cancelBody', { email: invitation.email }),
       [
-        { text: 'No', style: 'cancel' },
+        { text: t('mobileParity.common.cancel'), style: 'cancel' },
         {
-          text: 'Yes, Cancel',
+          text: t('mobileParity.invitations.cancelAction'),
           style: 'destructive',
           onPress: async () => {
             const result = await api.deleteInvitation(invitation.id);
             if (result.success) {
               fetchInvitations();
             } else {
-              Alert.alert('Error', result.error || 'Failed to cancel invitation');
+              Alert.alert(t('mobileParity.common.error'), result.error || t('mobileParity.invitations.cancelFailed'));
             }
           },
         },
@@ -146,15 +149,6 @@ export default function InvitationsScreen({ navigation }: Props) {
         ? prev.filter(id => id !== dbId)
         : [...prev, dbId]
     );
-  };
-
-  const formatDate = (dateStr: string): string => {
-    const date = new Date(dateStr);
-    return date.toLocaleDateString('en-US', {
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric',
-    });
   };
 
   const isExpired = (expiresAt: string): boolean => {
@@ -174,15 +168,20 @@ export default function InvitationsScreen({ navigation }: Props) {
               { backgroundColor: expired ? colors.danger : colors.success }
             ]}>
               <Text style={styles.statusText}>
-                {expired ? 'Expired' : 'Pending'}
+                {expired ? t('mobileParity.invitations.expired') : t('mobileParity.invitations.pending')}
               </Text>
             </View>
           </View>
           <Text style={[styles.meta, { color: colors.textMuted }]}>
-            Role: {item.role} • Sent {formatDate(item.created_at)}
+            {t('mobileParity.invitations.metadata', {
+              role: item.role === 'admin' ? t('mobileParity.common.admin') : t('mobileParity.common.user'),
+              date: formatDate(item.created_at, { month: 'short', day: 'numeric', year: 'numeric' }),
+            })}
           </Text>
           <Text style={[styles.meta, { color: expired ? colors.danger : colors.textMuted }]}>
-            {expired ? 'Expired' : 'Expires'} {formatDate(item.expires_at)}
+            {t(expired ? 'mobileParity.invitations.expiredOn' : 'mobileParity.invitations.expiresOn', {
+              date: formatDate(item.expires_at, { month: 'short', day: 'numeric', year: 'numeric' }),
+            })}
           </Text>
         </View>
 
@@ -192,14 +191,14 @@ export default function InvitationsScreen({ navigation }: Props) {
               style={[styles.actionButton, { backgroundColor: colors.primary }]}
               onPress={() => handleResendInvitation(item)}
             >
-              <Text style={styles.actionButtonTextWhite}>Resend</Text>
+              <Text style={styles.actionButtonTextWhite}>{t('mobileParity.invitations.resend')}</Text>
             </TouchableOpacity>
           )}
           <TouchableOpacity
             style={[styles.actionButton, { backgroundColor: colors.border }]}
             onPress={() => handleDeleteInvitation(item)}
           >
-            <Text style={[styles.actionButtonText, { color: colors.text }]}>Cancel</Text>
+            <Text style={[styles.actionButtonText, { color: colors.text }]}>{t('mobileParity.common.cancel')}</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -218,11 +217,11 @@ export default function InvitationsScreen({ navigation }: Props) {
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       <View style={[styles.header, { backgroundColor: colors.surface }]}>
         <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton}>
-          <Text style={[styles.backButtonText, { color: colors.primary }]}>← Back</Text>
+          <Text style={[styles.backButtonText, { color: colors.primary }]}>← {t('mobileParity.common.back')}</Text>
         </TouchableOpacity>
-        <Text style={[styles.headerTitle, { color: colors.text }]}>Invitations</Text>
+        <Text style={[styles.headerTitle, { color: colors.text }]}>{t('mobileParity.invitations.title')}</Text>
         <TouchableOpacity onPress={() => setShowModal(true)} style={styles.addButton}>
-          <Text style={[styles.addButtonText, { color: colors.primary }]}>+ Invite</Text>
+          <Text style={[styles.addButtonText, { color: colors.primary }]}>+ {t('mobileParity.invitations.invite')}</Text>
         </TouchableOpacity>
       </View>
 
@@ -230,8 +229,7 @@ export default function InvitationsScreen({ navigation }: Props) {
       {!emailEnabled && (
         <View style={[styles.warningBanner, { backgroundColor: colors.warning + '20' }]}>
           <Text style={[styles.warningText, { color: colors.warning }]}>
-            Email is not configured. Invitation emails will not be sent automatically.
-            You'll need to share the invite link manually.
+            {t('mobileParity.invitations.emailWarning')}
           </Text>
         </View>
       )}
@@ -243,7 +241,7 @@ export default function InvitationsScreen({ navigation }: Props) {
             style={[styles.retryButton, { backgroundColor: colors.primary }]}
             onPress={fetchInvitations}
           >
-            <Text style={styles.retryButtonText}>Retry</Text>
+            <Text style={styles.retryButtonText}>{t('mobileParity.common.retry')}</Text>
           </TouchableOpacity>
         </View>
       ) : (
@@ -262,16 +260,16 @@ export default function InvitationsScreen({ navigation }: Props) {
           }
           ListEmptyComponent={
             <View style={styles.emptyContainer}>
-              <Text style={[styles.emptyText, { color: colors.textMuted }]}>No pending invitations</Text>
+              <Text style={[styles.emptyText, { color: colors.textMuted }]}>{t('mobileParity.invitations.noPending')}</Text>
               <Text style={[styles.emptySubtext, { color: colors.textMuted }]}>
-                Tap "+ Invite" to invite a new user
+                {t('mobileParity.invitations.emptyBody')}
               </Text>
             </View>
           }
           ListHeaderComponent={
             invitations.length > 0 ? (
               <Text style={[styles.sectionHeader, { color: colors.textMuted }]}>
-                {invitations.length} pending invitation{invitations.length !== 1 ? 's' : ''}
+                {t('mobileParity.invitations.count', { count: invitations.length })}
               </Text>
             ) : null
           }
@@ -287,9 +285,9 @@ export default function InvitationsScreen({ navigation }: Props) {
       >
         <View style={styles.modalOverlay}>
           <View style={[styles.modalContent, { backgroundColor: colors.surface }]}>
-            <Text style={[styles.modalTitle, { color: colors.text }]}>Invite User</Text>
+            <Text style={[styles.modalTitle, { color: colors.text }]}>{t('mobileParity.invitations.inviteUser')}</Text>
 
-            <Text style={[styles.inputLabel, { color: colors.textMuted }]}>Email Address</Text>
+            <Text style={[styles.inputLabel, { color: colors.textMuted }]}>{t('mobileParity.invitations.emailAddress')}</Text>
             <TextInput
               style={[styles.input, {
                 backgroundColor: colors.background,
@@ -298,13 +296,13 @@ export default function InvitationsScreen({ navigation }: Props) {
               }]}
               value={email}
               onChangeText={setEmail}
-              placeholder="user@example.com"
+              placeholder={t('admin.users.emailPlaceholder')}
               placeholderTextColor={colors.textMuted}
               keyboardType="email-address"
               autoCapitalize="none"
             />
 
-            <Text style={[styles.inputLabel, { color: colors.textMuted }]}>Role</Text>
+            <Text style={[styles.inputLabel, { color: colors.textMuted }]}>{t('mobileParity.userManagement.role')}</Text>
             <View style={styles.roleToggle}>
               <TouchableOpacity
                 style={[
@@ -319,7 +317,7 @@ export default function InvitationsScreen({ navigation }: Props) {
                   { color: colors.text },
                   role === 'user' && { color: '#fff' },
                 ]}>
-                  User
+                  {t('mobileParity.common.user')}
                 </Text>
               </TouchableOpacity>
               <TouchableOpacity
@@ -335,12 +333,12 @@ export default function InvitationsScreen({ navigation }: Props) {
                   { color: colors.text },
                   role === 'admin' && { color: '#fff' },
                 ]}>
-                  Admin
+                  {t('mobileParity.common.admin')}
                 </Text>
               </TouchableOpacity>
             </View>
 
-            <Text style={[styles.inputLabel, { color: colors.textMuted }]}>Bill Groups</Text>
+            <Text style={[styles.inputLabel, { color: colors.textMuted }]}>{t('mobileParity.invitations.billGroups')}</Text>
             <View style={styles.databaseList}>
               {databases.map((db) => (
                 <TouchableOpacity
@@ -374,7 +372,7 @@ export default function InvitationsScreen({ navigation }: Props) {
                 onPress={() => setShowModal(false)}
                 disabled={isSubmitting}
               >
-                <Text style={[styles.cancelButtonText, { color: colors.text }]}>Cancel</Text>
+                <Text style={[styles.cancelButtonText, { color: colors.text }]}>{t('mobileParity.common.cancel')}</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={[styles.confirmButton, { backgroundColor: colors.primary }, isSubmitting && styles.buttonDisabled]}
@@ -384,7 +382,7 @@ export default function InvitationsScreen({ navigation }: Props) {
                 {isSubmitting ? (
                   <ActivityIndicator color="#fff" size="small" />
                 ) : (
-                  <Text style={styles.confirmButtonText}>Send Invite</Text>
+                  <Text style={styles.confirmButtonText}>{t('mobileParity.invitations.sendInvite')}</Text>
                 )}
               </TouchableOpacity>
             </View>

@@ -12,24 +12,13 @@ import {
   Pressable,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
+import { useTranslation } from 'react-i18next';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../context/ThemeContext';
 import { api } from '../api/client';
 import { SharedBill, PendingShare } from '../types';
 import { BillIcon } from '../components/BillIcon';
-
-const formatCurrency = (amount: number | null): string => {
-  if (amount === null) return 'Variable';
-  return `$${amount.toFixed(2)}`;
-};
-
-const formatDate = (dateStr: string): string => {
-  const date = new Date(dateStr + 'T00:00:00');
-  return date.toLocaleDateString('en-US', {
-    month: 'short',
-    day: 'numeric',
-  });
-};
+import { formatCurrency, formatDate } from '../i18n/format';
 
 const getDaysUntil = (dateStr: string): number => {
   const today = new Date();
@@ -45,7 +34,7 @@ const getSplitLabel = (splitType: string | null, splitValue: number | null): str
     case 'percentage':
       return `${splitValue}%`;
     case 'fixed':
-      return `$${splitValue?.toFixed(2)}`;
+      return formatCurrency(splitValue);
     case 'equal':
       return '50/50';
     default:
@@ -54,6 +43,7 @@ const getSplitLabel = (splitType: string | null, splitValue: number | null): str
 };
 
 export default function SharedBillsScreen() {
+  const { t } = useTranslation();
   const insets = useSafeAreaInsets();
   const { colors } = useTheme();
   const [sharedBills, setSharedBills] = useState<SharedBill[]>([]);
@@ -81,12 +71,12 @@ export default function SharedBillsScreen() {
       }
       setError(null);
     } catch (err) {
-      setError('Failed to load shared bills');
+      setError(t('mobileParity.collaboration.unavailableBody'));
     } finally {
       setIsLoading(false);
       setIsRefreshing(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     fetchData();
@@ -108,25 +98,25 @@ export default function SharedBillsScreen() {
     if (result.success) {
       fetchData();
     } else {
-      Alert.alert('Error', result.error || 'Failed to accept share');
+      Alert.alert(t('mobileParity.common.error'), result.error || t('mobileParity.collaboration.acceptFailed'));
     }
   };
 
   const handleDeclineShare = async (shareId: number) => {
     Alert.alert(
-      'Decline Invitation',
-      'Are you sure you want to decline this bill share invitation?',
+      t('mobileParity.collaboration.declineTitle'),
+      t('mobileParity.collaboration.declineBody'),
       [
-        { text: 'Cancel', style: 'cancel' },
+        { text: t('mobileParity.common.cancel'), style: 'cancel' },
         {
-          text: 'Decline',
+          text: t('sharedBillsSection.decline'),
           style: 'destructive',
           onPress: async () => {
             const result = await api.declineShare(shareId);
             if (result.success) {
               fetchData();
             } else {
-              Alert.alert('Error', result.error || 'Failed to decline share');
+              Alert.alert(t('mobileParity.common.error'), result.error || t('mobileParity.collaboration.declineFailed'));
             }
           },
         },
@@ -145,7 +135,7 @@ export default function SharedBillsScreen() {
       setSelectedShare(null);
       fetchData();
     } else {
-      Alert.alert('Error', result.error || 'Failed to leave share');
+      Alert.alert(t('mobileParity.common.error'), result.error || t('mobileParity.collaboration.leaveFailed'));
     }
   };
 
@@ -161,7 +151,7 @@ export default function SharedBillsScreen() {
         />
         <View style={styles.pendingInfo}>
           <Text style={styles.pendingBillName}>{item.bill_name}</Text>
-          <Text style={styles.pendingOwner}>from {item.owner}</Text>
+          <Text style={styles.pendingOwner}>{t('mobileParity.collaboration.from', { name: item.owner })}</Text>
         </View>
         {item.bill_amount && (
           <Text style={styles.pendingAmount}>{formatCurrency(item.bill_amount)}</Text>
@@ -169,7 +159,7 @@ export default function SharedBillsScreen() {
       </View>
       {item.split_type && (
         <Text style={styles.splitInfo}>
-          Your portion: {getSplitLabel(item.split_type, item.split_value)}
+          {t('sharedBillsSection.yourPortion', { amount: getSplitLabel(item.split_type, item.split_value) })}
         </Text>
       )}
       <View style={styles.pendingActions}>
@@ -177,13 +167,13 @@ export default function SharedBillsScreen() {
           style={styles.declineButton}
           onPress={() => handleDeclineShare(item.share_id)}
         >
-          <Text style={styles.declineButtonText}>Decline</Text>
+          <Text style={styles.declineButtonText}>{t('sharedBillsSection.decline')}</Text>
         </TouchableOpacity>
         <TouchableOpacity
           style={styles.acceptButton}
           onPress={() => handleAcceptShare(item.share_id)}
         >
-          <Text style={styles.acceptButtonText}>Accept</Text>
+          <Text style={styles.acceptButtonText}>{t('sharedBillsSection.accept')}</Text>
         </TouchableOpacity>
       </View>
     </View>
@@ -195,10 +185,10 @@ export default function SharedBillsScreen() {
     const isDeposit = item.bill.type === 'deposit';
 
     const dueText = isOverdue
-      ? `Due ${Math.abs(daysUntil)}d ago`
+      ? t('mobileParity.bills.dueAgo', { count: Math.abs(daysUntil) })
       : daysUntil === 0
-      ? 'Due Today'
-      : `Due in ${daysUntil}d`;
+      ? t('mobileParity.bills.dueToday')
+      : t('mobileParity.bills.dueIn', { count: daysUntil });
 
     return (
       <TouchableOpacity
@@ -217,17 +207,17 @@ export default function SharedBillsScreen() {
 
           <View style={styles.cardMiddle}>
             <Text style={styles.billName} numberOfLines={1}>{item.bill.name}</Text>
-            <Text style={styles.ownerText}>Shared by {item.owner}</Text>
+            <Text style={styles.ownerText}>{t('mobileParity.bills.sharedBy', { name: item.owner })}</Text>
             <Text style={styles.dueText}>{formatDate(item.bill.next_due)} - {dueText}</Text>
           </View>
 
           <View style={styles.cardRight}>
             <Text style={[styles.billAmount, { color: isDeposit ? colors.success : colors.text }]}>
-              {formatCurrency(item.bill.amount)}
+              {item.bill.amount == null ? t('common.varies') : formatCurrency(item.bill.amount)}
             </Text>
             {item.split_type && item.my_portion && (
               <Text style={styles.portionText}>
-                You: {formatCurrency(item.my_portion)}
+                {t('sharedBillsSection.yourPortion', { amount: formatCurrency(item.my_portion) })}
               </Text>
             )}
           </View>
@@ -236,7 +226,10 @@ export default function SharedBillsScreen() {
         {item.last_payment && (
           <View style={styles.lastPaymentBadge}>
             <Text style={styles.lastPaymentText}>
-              Last paid: {formatDate(item.last_payment.date)} ({formatCurrency(item.last_payment.amount)})
+              {t('mobileParity.collaboration.lastPaid', {
+                date: formatDate(item.last_payment.date),
+                amount: formatCurrency(item.last_payment.amount),
+              })}
             </Text>
           </View>
         )}
@@ -257,7 +250,7 @@ export default function SharedBillsScreen() {
       <View style={styles.centered}>
         <Text style={styles.errorText}>{error}</Text>
         <TouchableOpacity style={styles.retryButton} onPress={fetchData}>
-          <Text style={styles.retryButtonText}>Retry</Text>
+          <Text style={styles.retryButtonText}>{t('mobileParity.common.retry')}</Text>
         </TouchableOpacity>
       </View>
     );
@@ -268,17 +261,20 @@ export default function SharedBillsScreen() {
   return (
     <View style={styles.container}>
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>Shared Bills</Text>
+        <Text style={styles.headerTitle}>{t('sharedBillsSection.title')}</Text>
         <Text style={styles.headerSubtitle}>
-          {sharedBills.length} active • {pendingShares.length} pending
+          {t('mobileParity.collaboration.counts', {
+            active: sharedBills.length,
+            pending: pendingShares.length,
+          })}
         </Text>
       </View>
 
       {!hasContent ? (
         <View style={styles.emptyContainer}>
-          <Text style={styles.emptyText}>No shared bills yet</Text>
+          <Text style={styles.emptyText}>{t('mobileParity.collaboration.emptyTitle')}</Text>
           <Text style={styles.emptySubtext}>
-            When someone shares a bill with you, it will appear here
+            {t('mobileParity.collaboration.emptyReceivedBody')}
           </Text>
         </View>
       ) : (
@@ -301,7 +297,7 @@ export default function SharedBillsScreen() {
               <>
                 {showActiveSectionHeader && (
                   <Text style={[styles.sectionTitle, styles.activeSectionTitle]}>
-                    Active Shared Bills
+                    {t('mobileParity.collaboration.activeSharedBills')}
                   </Text>
                 )}
                 {item.type === 'pending'
@@ -321,7 +317,7 @@ export default function SharedBillsScreen() {
           }
           ListHeaderComponent={
             pendingShares.length > 0 ? (
-              <Text style={styles.sectionTitle}>Pending Invitations</Text>
+              <Text style={styles.sectionTitle}>{t('sharedBillsSection.pendingInvitations')}</Text>
             ) : null
           }
           stickyHeaderIndices={pendingShares.length > 0 ? [0] : undefined}
@@ -340,26 +336,30 @@ export default function SharedBillsScreen() {
             {selectedShare && (
               <>
                 <Text style={styles.modalTitle}>{selectedShare.bill.name}</Text>
-                <Text style={styles.modalSubtitle}>Shared by {selectedShare.owner}</Text>
+                <Text style={styles.modalSubtitle}>{t('mobileParity.bills.sharedBy', { name: selectedShare.owner })}</Text>
 
                 <View style={styles.modalInfoRow}>
-                  <Text style={styles.modalLabel}>Amount</Text>
-                  <Text style={styles.modalValue}>{formatCurrency(selectedShare.bill.amount)}</Text>
+                  <Text style={styles.modalLabel}>{t('common.table.amount')}</Text>
+                  <Text style={styles.modalValue}>
+                    {selectedShare.bill.amount == null ? t('common.varies') : formatCurrency(selectedShare.bill.amount)}
+                  </Text>
                 </View>
 
                 <View style={styles.modalInfoRow}>
-                  <Text style={styles.modalLabel}>Next Due</Text>
+                  <Text style={styles.modalLabel}>{t('export.nextDue')}</Text>
                   <Text style={styles.modalValue}>{formatDate(selectedShare.bill.next_due)}</Text>
                 </View>
 
                 <View style={styles.modalInfoRow}>
-                  <Text style={styles.modalLabel}>Frequency</Text>
-                  <Text style={styles.modalValue}>{selectedShare.bill.frequency}</Text>
+                  <Text style={styles.modalLabel}>{t('common.table.frequency')}</Text>
+                  <Text style={styles.modalValue}>
+                    {t(`common.frequency.${selectedShare.bill.frequency === 'bi-weekly' ? 'biweekly' : selectedShare.bill.frequency}`)}
+                  </Text>
                 </View>
 
                 {selectedShare.split_type && (
                   <View style={styles.modalInfoRow}>
-                    <Text style={styles.modalLabel}>Your Portion</Text>
+                    <Text style={styles.modalLabel}>{t('mobileParity.collaboration.yourShare')}</Text>
                     <Text style={styles.modalValue}>
                       {getSplitLabel(selectedShare.split_type, selectedShare.split_value)}
                       {selectedShare.my_portion && ` (${formatCurrency(selectedShare.my_portion)})`}
@@ -369,7 +369,7 @@ export default function SharedBillsScreen() {
 
                 {selectedShare.last_payment && (
                   <View style={styles.modalInfoRow}>
-                    <Text style={styles.modalLabel}>Last Payment</Text>
+                    <Text style={styles.modalLabel}>{t('mobileParity.collaboration.lastPayment')}</Text>
                     <Text style={styles.modalValue}>
                       {formatDate(selectedShare.last_payment.date)} - {formatCurrency(selectedShare.last_payment.amount)}
                     </Text>
@@ -380,12 +380,12 @@ export default function SharedBillsScreen() {
                   style={styles.leaveButton}
                   onPress={() => {
                     Alert.alert(
-                      'Leave Shared Bill',
-                      'Are you sure you want to stop watching this shared bill?',
+                      t('mobileParity.collaboration.leaveTitle'),
+                      t('mobileParity.collaboration.leaveBody'),
                       [
-                        { text: 'Cancel', style: 'cancel' },
+                        { text: t('mobileParity.common.cancel'), style: 'cancel' },
                         {
-                          text: 'Leave',
+                          text: t('mobileParity.collaboration.leave'),
                           style: 'destructive',
                           onPress: handleLeaveShare,
                         },
@@ -397,7 +397,7 @@ export default function SharedBillsScreen() {
                   {isLeaving ? (
                     <ActivityIndicator color={colors.danger} size="small" />
                   ) : (
-                    <Text style={styles.leaveButtonText}>Leave Shared Bill</Text>
+                    <Text style={styles.leaveButtonText}>{t('mobileParity.collaboration.leave')}</Text>
                   )}
                 </TouchableOpacity>
 
@@ -406,7 +406,7 @@ export default function SharedBillsScreen() {
                     style={[styles.modalButton, styles.modalCloseButton]}
                     onPress={() => setSelectedShare(null)}
                   >
-                    <Text style={styles.modalCloseText}>Close</Text>
+                    <Text style={styles.modalCloseText}>{t('mobileParity.common.close')}</Text>
                   </Pressable>
                 </View>
               </>

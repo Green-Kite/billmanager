@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <string name="billmanager_widget_name">BillManager Upcoming</string>
+  <string name="billmanager_widget_description">See what is due next without opening BillManager.</string>
+  <string name="billmanager_widget_loading">Loading upcoming bills…</string>
+  <string name="billmanager_widget_next_up">Next up</string>
+  <string name="billmanager_widget_no_upcoming">No upcoming bills</string>
+  <string name="billmanager_widget_caught_up">You’re all caught up</string>
+  <string name="billmanager_widget_remaining_this_month">%1$s remaining this month</string>
+</resources>

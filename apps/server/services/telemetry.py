@@ -8,17 +8,20 @@ Collects anonymous usage statistics to help improve the product.
 """
 
 import os
-import sys
-import json
+import secrets
+import time
 import uuid
 import platform
 import logging
 import requests
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, Optional
-from sqlalchemy import func
+from sqlalchemy import func, text
 
 logger = logging.getLogger(__name__)
+
+RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+_jitter_random = secrets.SystemRandom()
 
 
 class TelemetryCollector:
@@ -30,6 +33,13 @@ class TelemetryCollector:
         self.instance_id = None
         self.telemetry_enabled = True
         self.telemetry_url = None
+        self.instance_file = '.instance_id'
+        self.send_attempts = 3
+        self.retry_base_seconds = 1.0
+        self.retry_max_seconds = 30.0
+        self.min_send_interval_hours = 20.0
+        self.local_log_retention_days = 90
+        self._last_log_cleanup_at = None
 
         if app:
             self.init_app(app, db)
@@ -42,23 +52,70 @@ class TelemetryCollector:
         # Get configuration
         self.telemetry_enabled = os.environ.get('TELEMETRY_ENABLED', 'true').lower() == 'true'
         self.telemetry_url = os.environ.get('TELEMETRY_URL', 'https://app.billmanager.app/api/telemetry')
+        self.instance_file = os.environ.get('TELEMETRY_INSTANCE_ID_FILE', '.instance_id')
+        self.send_attempts = self._get_int_config('TELEMETRY_SEND_ATTEMPTS', 3, 1)
+        self.retry_base_seconds = self._get_float_config(
+            'TELEMETRY_RETRY_BASE_SECONDS', 1.0, 0.0
+        )
+        self.retry_max_seconds = self._get_float_config(
+            'TELEMETRY_RETRY_MAX_SECONDS', 30.0, 0.0
+        )
+        self.min_send_interval_hours = self._get_float_config(
+            'TELEMETRY_MIN_SEND_INTERVAL_HOURS', 20.0, 0.0
+        )
+        self.local_log_retention_days = self._get_int_config(
+            'TELEMETRY_LOCAL_LOG_RETENTION_DAYS', 90, 1
+        )
 
-        # Load or generate instance ID
-        self.instance_id = self._get_or_create_instance_id()
+        # Avoid generating an identifier when telemetry is globally disabled.
+        self.instance_id = (
+            self._get_or_create_instance_id() if self.telemetry_enabled else None
+        )
 
-        logger.info(f"Telemetry initialized - Enabled: {self.telemetry_enabled}, Instance ID: {self.instance_id}")
+        logger.info("Telemetry initialized - Enabled: %s", self.telemetry_enabled)
+
+    @staticmethod
+    def _get_int_config(name: str, default: int, minimum: int) -> int:
+        try:
+            return max(minimum, int(os.environ.get(name, str(default))))
+        except ValueError:
+            logger.warning("Ignoring invalid %s; using %s", name, default)
+            return default
+
+    @staticmethod
+    def _get_float_config(name: str, default: float, minimum: float) -> float:
+        try:
+            return max(minimum, float(os.environ.get(name, str(default))))
+        except ValueError:
+            logger.warning("Ignoring invalid %s; using %s", name, default)
+            return default
+
+    @staticmethod
+    def _is_valid_instance_id(instance_id: Any) -> bool:
+        """Return whether a value is a canonical UUID suitable for telemetry."""
+        if not isinstance(instance_id, str):
+            return False
+        try:
+            return str(uuid.UUID(instance_id)) == instance_id.lower()
+        except (ValueError, AttributeError):
+            return False
 
     def _get_or_create_instance_id(self) -> str:
         """Get existing instance ID or generate new one."""
-        instance_file = '.instance_id'
+        configured_id = os.environ.get('TELEMETRY_INSTANCE_ID', '').strip()
+        if configured_id:
+            if self._is_valid_instance_id(configured_id):
+                return configured_id.lower()
+            logger.warning("Ignoring invalid TELEMETRY_INSTANCE_ID; expected a UUID")
 
         # Try to read existing ID
-        if os.path.exists(instance_file):
+        if os.path.exists(self.instance_file):
             try:
-                with open(instance_file, 'r') as f:
+                with open(self.instance_file, 'r', encoding='utf-8') as f:
                     instance_id = f.read().strip()
-                    if instance_id:
-                        return instance_id
+                    if self._is_valid_instance_id(instance_id):
+                        return instance_id.lower()
+                    logger.warning("Ignoring invalid telemetry instance ID file")
             except Exception as e:
                 logger.warning(f"Failed to read instance ID: {e}")
 
@@ -67,30 +124,43 @@ class TelemetryCollector:
 
         # Save for future use
         try:
-            with open(instance_file, 'w') as f:
+            with open(self.instance_file, 'w', encoding='utf-8') as f:
                 f.write(instance_id)
         except Exception as e:
             logger.warning(f"Failed to save instance ID: {e}")
 
         return instance_id
 
+    def _restore_instance_id_from_log(self) -> None:
+        """Recover a stable instance ID from the persistent telemetry log."""
+        if os.environ.get('TELEMETRY_INSTANCE_ID'):
+            return
+
+        try:
+            from models import TelemetryLog
+
+            previous = TelemetryLog.query.order_by(TelemetryLog.id.desc()).first()
+            if previous and self._is_valid_instance_id(previous.instance_id):
+                self.instance_id = previous.instance_id.lower()
+        except Exception as e:
+            # Fresh installs may call this before the telemetry table exists.
+            logger.debug(f"Failed to restore telemetry instance ID from database: {e}")
+
     def collect_metrics(self) -> Dict[str, Any]:
         """Collect all anonymous usage metrics."""
-        from models import User, Database, Bill, Payment, UserDevice, Subscription
         from config import DEPLOYMENT_MODE, ENABLE_BILLING
 
         try:
-            # Import inside function to avoid circular imports
+            if not self.instance_id:
+                self.instance_id = self._get_or_create_instance_id()
+            self._restore_instance_id_from_log()
+
             metrics = {
                 "instance_id": self.instance_id,
                 "version": self._get_version(),
                 "deployment_mode": DEPLOYMENT_MODE,
                 "installation_date": self._get_installation_date(),
                 "timestamp": datetime.now(timezone.utc).isoformat(),
-
-                # Server identification (for SaaS contact)
-                "server_url": self._get_server_url(),
-                "server_ip": self._get_server_ip(),
 
                 # User metrics
                 "metrics": {
@@ -107,6 +177,13 @@ class TelemetryCollector:
             # Add subscription metrics only for SaaS deployments
             if ENABLE_BILLING and DEPLOYMENT_MODE == 'saas':
                 metrics["metrics"]["subscriptions"] = self._get_subscription_metrics()
+
+            # Deployment identifiers are only used to alert the operator about
+            # a newly detected SaaS deployment. Self-hosted instances remain
+            # limited to the anonymous aggregate payload documented above.
+            if DEPLOYMENT_MODE == 'saas':
+                metrics["server_url"] = self._get_server_url()
+                metrics["server_ip"] = self._get_server_ip()
 
             return metrics
 
@@ -153,10 +230,10 @@ class TelemetryCollector:
             total_users = self.db.session.query(func.count(User.id)).scalar() or 0
             admin_users = self.db.session.query(func.count(User.id)).filter(User.role == 'admin').scalar() or 0
 
-            # Active users (logged in within 30 days)
             thirty_days_ago = datetime.now(timezone.utc) - timedelta(days=30)
-            # Note: We don't track last_login, so this will be 0 for now
-            active_30d = 0
+            active_30d = self.db.session.query(func.count(User.id)).filter(
+                User.last_login_at >= thirty_days_ago
+            ).scalar() or 0
 
             return {
                 "total": total_users,
@@ -284,7 +361,7 @@ class TelemetryCollector:
             # Get database version
             db_version = "unknown"
             try:
-                result = self.db.session.execute("SELECT version()").fetchone()
+                result = self.db.session.execute(text("SELECT version()")).fetchone()
                 if result:
                     db_version = result[0].split(',')[0]  # e.g., "PostgreSQL 15.2"
             except Exception as e:
@@ -320,23 +397,64 @@ class TelemetryCollector:
 
     def _is_opted_out(self) -> bool:
         """Check if any account owner has opted out of telemetry."""
-        from models import User
+        from models import TelemetrySettings, User
 
         try:
-            # Check if any account owner (self-registered admin) has opted out
-            opted_out = self.db.session.query(User).filter(
+            settings = self.db.session.get(TelemetrySettings, 1)
+            if settings:
+                # Pending consent fails closed until an owner explicitly enables it.
+                return settings.state != 'enabled'
+
+            # Conservative compatibility fallback for an upgrade where the
+            # settings migration has not yet completed.
+            owners = self.db.session.query(User).filter(
                 User.role == 'admin',
                 User.created_by_id.is_(None),
-                User.telemetry_opt_out == True
-            ).first()
-
-            return opted_out is not None
+            ).all()
+            if any(owner.telemetry_opt_out is True for owner in owners):
+                return True
+            return not any(
+                owner.telemetry_notice_shown_at
+                and owner.telemetry_opt_out is not True
+                for owner in owners
+            )
         except Exception as e:
             logger.error(f"Failed to check telemetry opt-out status: {e}")
             # If we can't check, err on the side of privacy - don't send
             return True
 
-    def send_telemetry(self, metrics: Optional[Dict[str, Any]] = None) -> bool:
+    def _sent_recently(self) -> bool:
+        """Avoid duplicate startup/daily sends across workers and restarts."""
+        if not self.db or self.min_send_interval_hours <= 0:
+            return False
+
+        try:
+            from models import TelemetryLog
+
+            cutoff = datetime.now(timezone.utc) - timedelta(
+                hours=self.min_send_interval_hours
+            )
+            return TelemetryLog.query.filter(
+                TelemetryLog.send_successful.is_(True),
+                TelemetryLog.last_sent_at >= cutoff,
+            ).first() is not None
+        except Exception as e:
+            # A missing table on a new install should not permanently disable
+            # telemetry. The receiver also deduplicates retried payloads.
+            logger.debug("Failed to check recent telemetry submissions: %s", e)
+            return False
+
+    def _retry_delay(self, failed_attempt: int) -> float:
+        base_delay = self.retry_base_seconds * (2 ** (failed_attempt - 1))
+        bounded_delay = min(self.retry_max_seconds, base_delay)
+        jitter = _jitter_random.uniform(0, min(bounded_delay * 0.25, 1.0))
+        return bounded_delay + jitter
+
+    def send_telemetry(
+        self,
+        metrics: Optional[Dict[str, Any]] = None,
+        force: bool = False,
+    ) -> bool:
         """
         Send telemetry data to collection endpoint.
 
@@ -356,6 +474,10 @@ class TelemetryCollector:
             logger.warning("No telemetry URL configured, skipping send")
             return False
 
+        if not force and self._sent_recently():
+            logger.debug("Telemetry was sent recently, skipping duplicate send")
+            return False
+
         if metrics is None:
             metrics = self.collect_metrics()
 
@@ -366,40 +488,62 @@ class TelemetryCollector:
         success = False
         error_msg = None
 
-        try:
-            logger.info(f"Sending telemetry to {self.telemetry_url}")
+        logger.info("Sending telemetry to %s", self.telemetry_url)
+        headers = {
+            'Content-Type': 'application/json',
+            'User-Agent': f'BillManager/{metrics.get("version", "unknown")}',
+        }
+        api_key = os.environ.get('TELEMETRY_API_KEY')
+        if api_key:
+            headers['X-Telemetry-Api-Key'] = api_key
 
-            headers = {
-                'Content-Type': 'application/json',
-                'User-Agent': f'BillManager/{metrics.get("version", "unknown")}',
-            }
-            api_key = os.environ.get('TELEMETRY_API_KEY')
-            if api_key:
-                headers['X-Telemetry-Api-Key'] = api_key
+        for attempt in range(1, self.send_attempts + 1):
+            retryable = False
+            try:
+                response = requests.post(
+                    self.telemetry_url,
+                    json=metrics,
+                    timeout=10,
+                    headers=headers
+                )
 
-            response = requests.post(
-                self.telemetry_url,
-                json=metrics,
-                timeout=10,
-                headers=headers
+                if response.status_code == 200:
+                    logger.info("Telemetry sent successfully")
+                    success = True
+                    error_msg = None
+                    break
+
+                response_text = str(response.text)[:500]
+                error_msg = f"HTTP {response.status_code}: {response_text}"
+                retryable = response.status_code in RETRYABLE_STATUS_CODES
+                logger.warning(
+                    "Telemetry send failed with status %s: %s",
+                    response.status_code,
+                    response_text,
+                )
+            except requests.exceptions.Timeout:
+                error_msg = "Request timed out"
+                retryable = True
+                logger.warning("Telemetry send timed out")
+            except requests.exceptions.RequestException as e:
+                error_msg = str(e)[:500]
+                retryable = True
+                logger.warning("Failed to send telemetry: %s", e)
+            except Exception as e:
+                error_msg = str(e)[:500]
+                logger.error("Unexpected error sending telemetry: %s", e, exc_info=True)
+
+            if not retryable or attempt >= self.send_attempts:
+                break
+
+            delay = self._retry_delay(attempt)
+            logger.info(
+                "Retrying telemetry send in %.2f seconds (attempt %s/%s)",
+                delay,
+                attempt + 1,
+                self.send_attempts,
             )
-
-            if response.status_code == 200:
-                logger.info("Telemetry sent successfully")
-                success = True
-            else:
-                error_msg = f"HTTP {response.status_code}: {response.text}"
-                logger.warning(f"Telemetry send failed with status {response.status_code}: {response.text}")
-
-        except requests.exceptions.Timeout:
-            error_msg = "Request timed out"
-            logger.warning("Telemetry send timed out")
-        except requests.exceptions.RequestException as e:
-            error_msg = str(e)
-            logger.warning(f"Failed to send telemetry: {e}")
-        except Exception as e:
-            error_msg = str(e)
-            logger.error(f"Unexpected error sending telemetry: {e}", exc_info=True)
+            time.sleep(delay)
 
         # Log the submission to database
         self._log_submission(metrics, success, error_msg)
@@ -425,6 +569,7 @@ class TelemetryCollector:
 
             self.db.session.add(log_entry)
             self.db.session.commit()
+            self._cleanup_local_logs()
 
         except Exception as e:
             logger.error(f"Failed to log telemetry submission: {e}", exc_info=True)
@@ -433,6 +578,39 @@ class TelemetryCollector:
                 self.db.session.rollback()
             except Exception as e:
                 logger.debug(f"Failed to rollback telemetry transaction: {e}")
+
+    def _cleanup_local_logs(self) -> None:
+        """Bound local telemetry history while retaining ID recovery data."""
+        now = datetime.now(timezone.utc)
+        if (
+            self._last_log_cleanup_at
+            and now - self._last_log_cleanup_at < timedelta(days=1)
+        ):
+            return
+
+        from models import TelemetryLog
+
+        try:
+            latest = TelemetryLog.query.order_by(TelemetryLog.id.desc()).first()
+            if not latest:
+                self._last_log_cleanup_at = now
+                return
+
+            cutoff = now - timedelta(days=self.local_log_retention_days)
+            TelemetryLog.query.filter(
+                TelemetryLog.last_sent_at < cutoff,
+                TelemetryLog.id != latest.id,
+            ).delete(synchronize_session=False)
+            self.db.session.commit()
+            self._last_log_cleanup_at = now
+        except Exception as e:
+            logger.debug("Failed to clean up old telemetry logs: %s", e)
+            try:
+                self.db.session.rollback()
+            except Exception as rollback_error:
+                logger.debug(
+                    "Failed to roll back telemetry cleanup: %s", rollback_error
+                )
 
 
 # Global instance

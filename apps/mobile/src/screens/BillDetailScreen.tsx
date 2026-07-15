@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -10,14 +10,19 @@ import {
   Modal,
   Pressable,
   Alert,
+  Platform,
+  Switch,
 } from 'react-native';
+import DateTimePicker from '@react-native-community/datetimepicker';
 import { Swipeable } from 'react-native-gesture-handler';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
-import { useFocusEffect } from '@react-navigation/native';
 import { api } from '../api/client';
 import { useTheme } from '../context/ThemeContext';
+import { useMobileRuntime } from '../context/MobileRuntimeContext';
+import { formatCurrency, formatDate } from '../i18n/format';
 import { Bill, Payment } from '../types';
 import ShareBillModal from '../components/ShareBillModal';
+import { useTranslation } from 'react-i18next';
 
 type BillsStackParamList = {
   BillsList: undefined;
@@ -27,35 +32,25 @@ type BillsStackParamList = {
 
 type Props = NativeStackScreenProps<BillsStackParamList, 'BillDetail'>;
 
-const formatCurrency = (amount: number | null, avgAmount?: number): string => {
-  if (amount === null) {
-    if (avgAmount && avgAmount > 0) {
-      return `~$${avgAmount.toFixed(2)}`;
-    }
-    return 'Variable';
-  }
-  return `$${amount.toFixed(2)}`;
-};
-
-const formatDate = (dateStr: string): string => {
-  const date = new Date(dateStr + 'T00:00:00');
-  return date.toLocaleDateString('en-US', {
-    weekday: 'short',
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-  });
-};
+function formatBillAmount(amount: number | null, average: number | undefined, variableLabel: string): string {
+  if (amount !== null) return formatCurrency(amount);
+  return average && average > 0 ? `~${formatCurrency(average)}` : variableLabel;
+}
 
 export default function BillDetailScreen({ route, navigation }: Props) {
+  const { t } = useTranslation();
   const { billId } = route.params;
   const { colors } = useTheme();
-  const [bill, setBill] = useState<Bill | null>(null);
-  const [payments, setPayments] = useState<Payment[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const runtime = useMobileRuntime();
+  const bill = [...runtime.bills, ...runtime.archivedBills]
+    .find((candidate) => candidate.id === billId) ?? null;
+  const payments = runtime.payments.filter((payment) => payment.bill_id === billId);
   const [showPayModal, setShowPayModal] = useState(false);
   const [payAmount, setPayAmount] = useState('');
+  const [payDate, setPayDate] = useState(new Date());
+  const [payNotes, setPayNotes] = useState('');
+  const [advanceDue, setAdvanceDue] = useState(true);
+  const [showPayDatePicker, setShowPayDatePicker] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Payment edit/delete state
@@ -72,61 +67,35 @@ export default function BillDetailScreen({ route, navigation }: Props) {
 
   const styles = createStyles(colors);
 
-  const fetchBillData = useCallback(async () => {
-    try {
-      const [billRes, paymentsRes] = await Promise.all([
-        api.getBill(billId),
-        api.getPayments(billId),
-      ]);
-
-      if (billRes.success && billRes.data) {
-        setBill(billRes.data);
-        setPayAmount(billRes.data.amount?.toString() || '');
-      } else {
-        setError(billRes.error || 'Failed to load bill');
-      }
-
-      if (paymentsRes.success && paymentsRes.data) {
-        setPayments(paymentsRes.data);
-      }
-    } catch (err) {
-      setError('Network error');
-    } finally {
-      setIsLoading(false);
-    }
-  }, [billId]);
-
   useEffect(() => {
-    fetchBillData();
-  }, [fetchBillData]);
-
-  useFocusEffect(
-    useCallback(() => {
-      fetchBillData();
-    }, [fetchBillData])
-  );
+    if (bill) setPayAmount((bill.amount ?? bill.avg_amount ?? '').toString());
+  }, [bill?.id, bill?.amount, bill?.avg_amount]);
 
   const handlePay = async () => {
     if (!bill) return;
 
     const amount = parseFloat(payAmount);
     if (isNaN(amount) || amount <= 0) {
-      Alert.alert('Invalid Amount', 'Please enter a valid payment amount');
+      Alert.alert(t('mobileParity.payments.checkDetails'), t('mobileParity.billDetail.invalidAmount'));
       return;
     }
 
     setIsSubmitting(true);
-    // Use local date components to avoid UTC timezone shift
-    const now = new Date();
-    const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-    const result = await api.recordPayment(bill.id, amount, today);
-
-    if (result.success) {
+    // Use local date components to avoid UTC timezone shift.
+    const paymentDate = `${payDate.getFullYear()}-${String(payDate.getMonth() + 1).padStart(2, '0')}-${String(payDate.getDate()).padStart(2, '0')}`;
+    try {
+      await runtime.recordPayment({
+        bill,
+        amount,
+        paymentDate,
+        notes: payNotes.trim() || undefined,
+        advanceDue,
+      });
       setShowPayModal(false);
-      fetchBillData();
-      Alert.alert('Success', 'Payment recorded successfully');
-    } else {
-      Alert.alert('Error', result.error || 'Failed to record payment');
+      setPayNotes('');
+      Alert.alert(t('mobileParity.common.success'), t('mobileParity.billDetail.recorded'));
+    } catch (reason) {
+      Alert.alert(t('mobileParity.common.error'), reason instanceof Error ? reason.message : t('mobileParity.billDetail.recordFailed'));
     }
     setIsSubmitting(false);
   };
@@ -138,11 +107,11 @@ export default function BillDetailScreen({ route, navigation }: Props) {
     const result = await api.markSharePaid(bill.share_info.share_id);
 
     if (result.success) {
-      fetchBillData();
+      await runtime.syncNow().catch(() => null);
       const wasPaid = bill.share_info.my_portion_paid;
-      Alert.alert('Success', wasPaid ? 'Portion marked as unpaid' : 'Portion marked as paid');
+      Alert.alert(t('mobileParity.common.success'), wasPaid ? t('mobileParity.billDetail.markedUnpaid') : t('mobileParity.billDetail.markedPaid'));
     } else {
-      Alert.alert('Error', result.error || 'Failed to update payment status');
+      Alert.alert(t('mobileParity.common.error'), result.error || t('mobileParity.billDetail.updateFailed'));
     }
     setIsSubmitting(false);
   };
@@ -157,19 +126,19 @@ export default function BillDetailScreen({ route, navigation }: Props) {
     if (!bill) return;
 
     Alert.alert(
-      'Archive Bill',
-      `Are you sure you want to archive "${bill.name}"? You can unarchive it later.`,
+      t('billModal.archive'),
+      t('billModal.archiveConfirm'),
       [
-        { text: 'Cancel', style: 'cancel' },
+        { text: t('mobileParity.common.cancel'), style: 'cancel' },
         {
-          text: 'Archive',
+          text: t('billModal.archive'),
           style: 'destructive',
           onPress: async () => {
-            const result = await api.archiveBill(bill.id);
-            if (result.success) {
+            try {
+              await runtime.archiveBill(bill);
               navigation.goBack();
-            } else {
-              Alert.alert('Error', result.error || 'Failed to archive bill');
+            } catch (reason) {
+              Alert.alert(t('mobileParity.common.error'), reason instanceof Error ? reason.message : t('mobileParity.billDetail.archiveFailed'));
             }
           },
         },
@@ -177,23 +146,38 @@ export default function BillDetailScreen({ route, navigation }: Props) {
     );
   };
 
+  const handleRestore = async () => {
+    if (!bill) return;
+    try {
+      await runtime.restoreBill(bill);
+      navigation.goBack();
+    } catch (reason) {
+      Alert.alert(t('mobileParity.common.error'), reason instanceof Error ? reason.message : t('mobileParity.billDetail.restoreFailed'));
+    }
+  };
+
   const handleDeleteBill = () => {
     if (!bill) return;
 
     Alert.alert(
-      'Delete Bill',
-      `Are you sure you want to permanently delete "${bill.name}"? This will also delete all payment history for this bill. This action cannot be undone.`,
+      t('mobileParity.billDetail.deleteBill'),
+      t('billModal.deleteConfirm'),
       [
-        { text: 'Cancel', style: 'cancel' },
+        { text: t('mobileParity.common.cancel'), style: 'cancel' },
         {
-          text: 'Delete',
+          text: t('mobileParity.common.delete'),
           style: 'destructive',
           onPress: async () => {
+            if (!runtime.online) {
+              Alert.alert(t('mobileParity.common.connectionRequired'), t('mobileParity.billDetail.deleteOffline'));
+              return;
+            }
             const result = await api.deleteBill(bill.id);
             if (result.success) {
+              await runtime.syncNow().catch(() => null);
               navigation.goBack();
             } else {
-              Alert.alert('Error', result.error || 'Failed to delete bill');
+              Alert.alert(t('mobileParity.common.error'), result.error || t('mobileParity.billDetail.deleteFailed'));
             }
           },
         },
@@ -215,24 +199,27 @@ export default function BillDetailScreen({ route, navigation }: Props) {
 
     const amount = parseFloat(editAmount);
     if (isNaN(amount) || amount <= 0) {
-      Alert.alert('Invalid Amount', 'Please enter a valid payment amount');
+      Alert.alert(t('mobileParity.payments.checkDetails'), t('mobileParity.billDetail.invalidAmount'));
       return;
     }
 
     setIsEditing(true);
-    const result = await api.updatePayment(
-      editPayment.id,
-      amount,
-      editPayment.payment_date,
-      editNotes.trim() || undefined
-    );
+    let errorMessage: string | null = null;
+    try {
+      await runtime.updatePayment(editPayment, {
+        amount,
+        payment_date: editPayment.payment_date,
+        notes: editNotes.trim() || null,
+      });
+    } catch (reason) {
+      errorMessage = reason instanceof Error ? reason.message : t('mobileParity.billDetail.updatePaymentFailed');
+    }
     setIsEditing(false);
 
-    if (result.success) {
+    if (!errorMessage) {
       setEditPayment(null);
-      fetchBillData();
     } else {
-      Alert.alert('Error', result.error || 'Failed to update payment');
+      Alert.alert(t('mobileParity.common.error'), errorMessage);
     }
   };
 
@@ -247,14 +234,18 @@ export default function BillDetailScreen({ route, navigation }: Props) {
     if (!deletePayment) return;
 
     setIsDeleting(true);
-    const result = await api.deletePayment(deletePayment.id);
+    let errorMessage: string | null = null;
+    try {
+      await runtime.deletePayment(deletePayment);
+    } catch (reason) {
+      errorMessage = reason instanceof Error ? reason.message : t('mobileParity.billDetail.deletePaymentFailed');
+    }
     setIsDeleting(false);
 
-    if (result.success) {
+    if (!errorMessage) {
       setDeletePayment(null);
-      fetchBillData();
     } else {
-      Alert.alert('Error', result.error || 'Failed to delete payment');
+      Alert.alert(t('mobileParity.common.error'), errorMessage);
     }
   };
 
@@ -263,7 +254,7 @@ export default function BillDetailScreen({ route, navigation }: Props) {
       style={[styles.swipeAction, styles.editAction]}
       onPress={() => handleSwipeEdit(payment)}
     >
-      <Text style={styles.swipeActionText}>Edit</Text>
+      <Text style={styles.swipeActionText}>{t('mobileParity.common.edit')}</Text>
     </TouchableOpacity>
   );
 
@@ -272,11 +263,11 @@ export default function BillDetailScreen({ route, navigation }: Props) {
       style={[styles.swipeAction, styles.deleteAction]}
       onPress={() => handleSwipeDelete(payment)}
     >
-      <Text style={styles.swipeActionText}>Delete</Text>
+      <Text style={styles.swipeActionText}>{t('mobileParity.common.delete')}</Text>
     </TouchableOpacity>
   );
 
-  if (isLoading) {
+  if (runtime.loading) {
     return (
       <View style={styles.centered}>
         <ActivityIndicator size="large" color={colors.primary} />
@@ -284,12 +275,12 @@ export default function BillDetailScreen({ route, navigation }: Props) {
     );
   }
 
-  if (error || !bill) {
+  if (runtime.error || !bill) {
     return (
       <View style={styles.centered}>
-        <Text style={styles.errorText}>{error || 'Bill not found'}</Text>
+        <Text style={styles.errorText}>{runtime.error || t('mobileParity.billDetail.notFound')}</Text>
         <TouchableOpacity style={styles.retryButton} onPress={() => navigation.goBack()}>
-          <Text style={styles.retryButtonText}>Go Back</Text>
+          <Text style={styles.retryButtonText}>{t('mobileParity.billDetail.goBack')}</Text>
         </TouchableOpacity>
       </View>
     );
@@ -303,18 +294,18 @@ export default function BillDetailScreen({ route, navigation }: Props) {
       {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity onPress={() => navigation.goBack()} style={styles.headerButton}>
-          <Text style={styles.headerButtonText}>← Back</Text>
+          <Text style={styles.headerButtonText}>← {t('mobileParity.billDetail.back')}</Text>
         </TouchableOpacity>
         {!isShared && (
           <TouchableOpacity onPress={handleEditBill} style={styles.headerButton}>
-            <Text style={styles.headerButtonTextPrimary}>Edit</Text>
+            <Text style={styles.headerButtonTextPrimary}>{t('mobileParity.common.edit')}</Text>
           </TouchableOpacity>
         )}
       </View>
       <View style={styles.titleContainer}>
         <Text style={styles.title}>{bill.name}</Text>
         {isShared && bill.share_info && (
-          <Text style={styles.subtitle}>Shared by {bill.share_info.owner_name}</Text>
+          <Text style={styles.subtitle}>{t('common.sharedBy', { name: bill.share_info.owner_name })}</Text>
         )}
       </View>
 
@@ -322,36 +313,36 @@ export default function BillDetailScreen({ route, navigation }: Props) {
         {/* Bill Info Card */}
         <View style={styles.card}>
           <View style={styles.infoRow}>
-            <Text style={styles.infoLabel}>Amount</Text>
+            <Text style={styles.infoLabel}>{t('billModal.amountLabel')}</Text>
             <Text style={[styles.infoValue, { color: isDeposit ? colors.success : colors.danger }]}>
-              {isDeposit ? '+' : '-'}{formatCurrency(bill.amount, bill.avg_amount)}
+              {isDeposit ? '+' : '-'}{formatBillAmount(bill.amount, bill.avg_amount, t('mobileParity.bills.variable'))}
             </Text>
           </View>
           <View style={styles.infoRow}>
-            <Text style={styles.infoLabel}>Next Due</Text>
+            <Text style={styles.infoLabel}>{t('mobileParity.billDetail.nextDue')}</Text>
             <Text style={styles.infoValue}>{formatDate(bill.next_due)}</Text>
           </View>
           <View style={styles.infoRow}>
-            <Text style={styles.infoLabel}>Frequency</Text>
-            <Text style={styles.infoValue}>{bill.frequency}</Text>
+            <Text style={styles.infoLabel}>{t('billModal.frequencyLabel')}</Text>
+            <Text style={styles.infoValue}>{t(`common.frequency.${bill.frequency === 'bi-weekly' ? 'biweekly' : bill.frequency}`)}</Text>
           </View>
           <View style={styles.infoRow}>
-            <Text style={styles.infoLabel}>Type</Text>
-            <Text style={styles.infoValue}>{isDeposit ? 'Income' : 'Expense'}</Text>
+            <Text style={styles.infoLabel}>{t('billModal.typeLabel')}</Text>
+            <Text style={styles.infoValue}>{isDeposit ? t('mobileParity.common.income') : t('mobileParity.common.expenses')}</Text>
           </View>
           {bill.account && (
             <View style={styles.infoRow}>
-              <Text style={styles.infoLabel}>Account</Text>
+              <Text style={styles.infoLabel}>{t('billModal.accountLabel')}</Text>
               <Text style={styles.infoValue}>{bill.account}</Text>
             </View>
           )}
           <View style={styles.infoRow}>
-            <Text style={styles.infoLabel}>Auto-Pay</Text>
-            <Text style={styles.infoValue}>{bill.auto_payment ? 'Yes' : 'No'}</Text>
+            <Text style={styles.infoLabel}>{t('mobileParity.billDetail.autoPay')}</Text>
+            <Text style={styles.infoValue}>{bill.auto_payment ? t('mobileParity.billDetail.yes') : t('mobileParity.billDetail.no')}</Text>
           </View>
           {bill.notes && (
             <View style={styles.notesContainer}>
-              <Text style={styles.infoLabel}>Notes</Text>
+              <Text style={styles.infoLabel}>{t('billModal.notesLabel')}</Text>
               <Text style={styles.notesText}>{bill.notes}</Text>
             </View>
           )}
@@ -360,22 +351,22 @@ export default function BillDetailScreen({ route, navigation }: Props) {
         {/* Shared Bill Info */}
         {isShared && bill.share_info && (
           <View style={[styles.card, styles.sharedCard]}>
-            <Text style={styles.sharedCardTitle}>Sharing Details</Text>
+            <Text style={styles.sharedCardTitle}>{t('mobileParity.billDetail.sharingDetails')}</Text>
 
             {bill.share_info.my_portion !== null && bill.share_info.my_portion !== undefined && (
               <View style={styles.infoRow}>
-                <Text style={styles.infoLabel}>My Portion</Text>
+                <Text style={styles.infoLabel}>{t('mobileParity.billDetail.myPortion')}</Text>
                 <Text style={[styles.infoValue, { fontWeight: '700', color: colors.primary }]}>
-                  ${bill.share_info.my_portion.toFixed(2)}
+                  {formatCurrency(bill.share_info.my_portion)}
                 </Text>
               </View>
             )}
 
             <View style={styles.infoRow}>
-              <Text style={styles.infoLabel}>Payment Status</Text>
+              <Text style={styles.infoLabel}>{t('mobileParity.billDetail.paymentStatus')}</Text>
               {bill.share_info.my_portion_paid ? (
                 <View>
-                  <Text style={[styles.infoValue, { color: colors.success }]}>✓ Paid</Text>
+                  <Text style={[styles.infoValue, { color: colors.success }]}>✓ {t('mobileParity.billDetail.paid')}</Text>
                   {bill.share_info.my_portion_paid_date && (
                     <Text style={styles.paidDate}>
                       {formatDate(bill.share_info.my_portion_paid_date)}
@@ -383,7 +374,7 @@ export default function BillDetailScreen({ route, navigation }: Props) {
                   )}
                 </View>
               ) : (
-                <Text style={[styles.infoValue, { color: colors.textMuted }]}>Not Paid</Text>
+                <Text style={[styles.infoValue, { color: colors.textMuted }]}>{t('mobileParity.billDetail.notPaid')}</Text>
               )}
             </View>
 
@@ -396,7 +387,7 @@ export default function BillDetailScreen({ route, navigation }: Props) {
                 <ActivityIndicator color="#fff" size="small" />
               ) : (
                 <Text style={styles.markPaidButtonText}>
-                  {bill.share_info.my_portion_paid ? 'Mark as Unpaid' : 'Mark as Paid'}
+                  {bill.share_info.my_portion_paid ? t('common.markAsUnpaid') : t('common.markMyPortionPaid')}
                 </Text>
               )}
             </TouchableOpacity>
@@ -407,17 +398,24 @@ export default function BillDetailScreen({ route, navigation }: Props) {
         {!isShared && (
           <>
             <View style={styles.actionRow}>
-              <TouchableOpacity
-                style={styles.primaryButton}
-                onPress={() => setShowPayModal(true)}
-              >
-                <Text style={styles.primaryButtonText}>Record Payment</Text>
-              </TouchableOpacity>
+              {!bill.archived && (
+                <TouchableOpacity
+                  style={styles.primaryButton}
+                  onPress={() => {
+                    setPayDate(new Date());
+                    setPayNotes('');
+                    setAdvanceDue(true);
+                    setShowPayModal(true);
+                  }}
+                >
+                  <Text style={styles.primaryButtonText}>{t('mobileParity.billDetail.recordPayment')}</Text>
+                </TouchableOpacity>
+              )}
               <TouchableOpacity
                 style={styles.secondaryButton}
-                onPress={handleArchive}
+                onPress={bill.archived ? handleRestore : handleArchive}
               >
-                <Text style={styles.secondaryButtonText}>Archive</Text>
+                <Text style={styles.secondaryButtonText}>{bill.archived ? t('mobileParity.billDetail.restore') : t('mobileParity.billDetail.archive')}</Text>
               </TouchableOpacity>
             </View>
 
@@ -427,7 +425,7 @@ export default function BillDetailScreen({ route, navigation }: Props) {
                 style={styles.shareButton}
                 onPress={() => setShowShareModal(true)}
               >
-                <Text style={styles.shareButtonText}>Share Bill</Text>
+                <Text style={styles.shareButtonText}>{t('mobileParity.billDetail.shareBill')}</Text>
               </TouchableOpacity>
             )}
 
@@ -436,22 +434,22 @@ export default function BillDetailScreen({ route, navigation }: Props) {
               style={styles.deleteBillButton}
               onPress={handleDeleteBill}
             >
-              <Text style={styles.deleteBillButtonText}>Delete Bill</Text>
+              <Text style={styles.deleteBillButtonText}>{t('mobileParity.billDetail.deleteBill')}</Text>
             </TouchableOpacity>
           </>
         )}
 
         {/* Payment History */}
         <View style={styles.sectionHeader}>
-          <Text style={styles.sectionTitle}>Payment History</Text>
+          <Text style={styles.sectionTitle}>{t('mobileParity.billDetail.paymentHistory')}</Text>
           {payments.length > 0 && (
-            <Text style={styles.swipeHint}>Swipe to edit/delete</Text>
+            <Text style={styles.swipeHint}>{t('mobileParity.billDetail.swipeHint')}</Text>
           )}
         </View>
         {payments.length === 0 ? (
           <View style={styles.card}>
             <View style={styles.emptyContainer}>
-              <Text style={styles.emptyText}>No payments recorded yet</Text>
+              <Text style={styles.emptyText}>{t('paymentHistory.noPayments')}</Text>
             </View>
           </View>
         ) : (
@@ -502,10 +500,10 @@ export default function BillDetailScreen({ route, navigation }: Props) {
       >
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Record Payment</Text>
+            <Text style={styles.modalTitle}>{t('mobileParity.billDetail.recordPayment')}</Text>
             <Text style={styles.modalSubtitle}>{bill.name}</Text>
 
-            <Text style={styles.inputLabel}>Amount</Text>
+            <Text style={styles.inputLabel}>{t('billModal.amountLabel')}</Text>
             <TextInput
               style={styles.input}
               value={payAmount}
@@ -516,13 +514,61 @@ export default function BillDetailScreen({ route, navigation }: Props) {
               editable={!isSubmitting}
             />
 
+            <Text style={styles.inputLabel}>{t('mobileParity.billDetail.paymentDate')}</Text>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`${t('mobileParity.billDetail.paymentDate')}, ${formatDate(`${payDate.getFullYear()}-${String(payDate.getMonth() + 1).padStart(2, '0')}-${String(payDate.getDate()).padStart(2, '0')}`)}`}
+              onPress={() => setShowPayDatePicker(true)}
+              style={styles.dateButton}
+            >
+              <Text style={styles.dateButtonText}>{formatDate(`${payDate.getFullYear()}-${String(payDate.getMonth() + 1).padStart(2, '0')}-${String(payDate.getDate()).padStart(2, '0')}`)}</Text>
+            </Pressable>
+            {showPayDatePicker ? (
+              <DateTimePicker
+                value={payDate}
+                mode="date"
+                display={Platform.OS === 'ios' ? 'compact' : 'default'}
+                maximumDate={new Date()}
+                onChange={(_event, value) => {
+                  if (Platform.OS !== 'ios') setShowPayDatePicker(false);
+                  if (value) setPayDate(value);
+                }}
+              />
+            ) : null}
+
+            <Text style={styles.inputLabel}>{t('mobileParity.addBill.notesOptional')}</Text>
+            <TextInput
+              style={[styles.input, styles.notesInput]}
+              value={payNotes}
+              onChangeText={setPayNotes}
+              placeholder={t('mobileParity.billDetail.paymentNotesPlaceholder')}
+              placeholderTextColor={colors.textMuted}
+              multiline
+              numberOfLines={3}
+              editable={!isSubmitting}
+            />
+
+            <View style={styles.advanceRow}>
+              <View style={styles.advanceCopy}>
+                <Text style={styles.advanceTitle}>{t('mobileParity.billDetail.advanceDue')}</Text>
+                <Text style={styles.advanceBody}>{t('mobileParity.billDetail.advanceDueBody')}</Text>
+              </View>
+              <Switch
+                accessibilityLabel={t('mobileParity.billDetail.advanceDueA11y')}
+                value={advanceDue}
+                disabled={isSubmitting}
+                onValueChange={setAdvanceDue}
+                trackColor={{ true: colors.primary }}
+              />
+            </View>
+
             <View style={styles.modalButtons}>
               <Pressable
                 style={[styles.modalButton, styles.modalCancelButton]}
                 onPress={() => setShowPayModal(false)}
                 disabled={isSubmitting}
               >
-                <Text style={styles.modalCancelText}>Cancel</Text>
+                <Text style={styles.modalCancelText}>{t('mobileParity.common.cancel')}</Text>
               </Pressable>
               <Pressable
                 style={[styles.modalButton, styles.modalConfirmButton]}
@@ -532,7 +578,7 @@ export default function BillDetailScreen({ route, navigation }: Props) {
                 {isSubmitting ? (
                   <ActivityIndicator color="#fff" size="small" />
                 ) : (
-                  <Text style={styles.modalConfirmText}>Record</Text>
+                  <Text style={styles.modalConfirmText}>{t('mobileParity.billDetail.record')}</Text>
                 )}
               </Pressable>
             </View>
@@ -549,12 +595,12 @@ export default function BillDetailScreen({ route, navigation }: Props) {
       >
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Edit Payment</Text>
+            <Text style={styles.modalTitle}>{t('mobileParity.billDetail.editPayment')}</Text>
             <Text style={styles.modalSubtitle}>
               {editPayment && formatDate(editPayment.payment_date)}
             </Text>
 
-            <Text style={styles.inputLabel}>Amount</Text>
+            <Text style={styles.inputLabel}>{t('billModal.amountLabel')}</Text>
             <TextInput
               style={styles.input}
               value={editAmount}
@@ -565,12 +611,12 @@ export default function BillDetailScreen({ route, navigation }: Props) {
               editable={!isEditing}
             />
 
-            <Text style={styles.inputLabel}>Notes (optional)</Text>
+            <Text style={styles.inputLabel}>{t('mobileParity.addBill.notesOptional')}</Text>
             <TextInput
               style={[styles.input, styles.notesInput]}
               value={editNotes}
               onChangeText={setEditNotes}
-              placeholder="Add notes..."
+              placeholder={t('mobileParity.billDetail.notesPlaceholder')}
               placeholderTextColor={colors.textMuted}
               multiline
               numberOfLines={3}
@@ -583,7 +629,7 @@ export default function BillDetailScreen({ route, navigation }: Props) {
                 onPress={() => setEditPayment(null)}
                 disabled={isEditing}
               >
-                <Text style={styles.modalCancelText}>Cancel</Text>
+                <Text style={styles.modalCancelText}>{t('mobileParity.common.cancel')}</Text>
               </Pressable>
               <Pressable
                 style={[styles.modalButton, styles.modalConfirmButton]}
@@ -593,7 +639,7 @@ export default function BillDetailScreen({ route, navigation }: Props) {
                 {isEditing ? (
                   <ActivityIndicator color="#fff" size="small" />
                 ) : (
-                  <Text style={styles.modalConfirmText}>Save</Text>
+                  <Text style={styles.modalConfirmText}>{t('mobileParity.common.save')}</Text>
                 )}
               </Pressable>
             </View>
@@ -610,9 +656,9 @@ export default function BillDetailScreen({ route, navigation }: Props) {
       >
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Delete Payment?</Text>
+            <Text style={styles.modalTitle}>{t('mobileParity.billDetail.deletePayment')}</Text>
             <Text style={styles.modalMessage}>
-              This will permanently delete the {deletePayment && formatCurrency(deletePayment.amount)} payment from {deletePayment && formatDate(deletePayment.payment_date)}.
+              {t('mobileParity.billDetail.deletePaymentBody')}
             </Text>
 
             <View style={styles.modalButtons}>
@@ -621,7 +667,7 @@ export default function BillDetailScreen({ route, navigation }: Props) {
                 onPress={() => setDeletePayment(null)}
                 disabled={isDeleting}
               >
-                <Text style={styles.modalCancelText}>Cancel</Text>
+                <Text style={styles.modalCancelText}>{t('mobileParity.common.cancel')}</Text>
               </Pressable>
               <Pressable
                 style={[styles.modalButton, styles.modalDeleteButton]}
@@ -631,7 +677,7 @@ export default function BillDetailScreen({ route, navigation }: Props) {
                 {isDeleting ? (
                   <ActivityIndicator color="#fff" size="small" />
                 ) : (
-                  <Text style={styles.modalConfirmText}>Delete</Text>
+                  <Text style={styles.modalConfirmText}>{t('mobileParity.common.delete')}</Text>
                 )}
               </Pressable>
             </View>
@@ -645,7 +691,7 @@ export default function BillDetailScreen({ route, navigation }: Props) {
           visible={showShareModal}
           onClose={() => setShowShareModal(false)}
           bill={bill}
-          onShareCreated={fetchBillData}
+          onShareCreated={() => { void runtime.syncNow().catch(() => null); }}
         />
       )}
     </View>
@@ -920,9 +966,45 @@ const createStyles = (colors: any) => StyleSheet.create({
     color: colors.text,
     marginBottom: 16,
   },
+  dateButton: {
+    minHeight: 48,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 8,
+    backgroundColor: colors.background,
+    paddingHorizontal: 14,
+    justifyContent: 'center',
+  },
+  dateButtonText: {
+    color: colors.text,
+    fontSize: 16,
+  },
   notesInput: {
     minHeight: 80,
     textAlignVertical: 'top',
+  },
+  advanceRow: {
+    minHeight: 64,
+    marginBottom: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+  },
+  advanceCopy: {
+    minWidth: 0,
+    flex: 1,
+    gap: 3,
+  },
+  advanceTitle: {
+    color: colors.text,
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  advanceBody: {
+    color: colors.textMuted,
+    fontSize: 12,
+    lineHeight: 17,
   },
   modalButtons: {
     flexDirection: 'row',

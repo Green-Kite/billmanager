@@ -16,6 +16,7 @@ can run without a live PostgreSQL instance:
 import importlib
 import os
 from contextlib import contextmanager
+from urllib.parse import parse_qs, urlparse
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -199,6 +200,80 @@ def _oauth_account(provider, provider_user_id):
     return OAuthAccount.query.filter_by(
         provider=provider, provider_user_id=provider_user_id
     ).first()
+
+
+class TestNativeRedirectUris:
+    """Native callbacks are exact-allowlisted and bound into OAuth state."""
+
+    def test_authorize_uses_official_mobile_callback(self, client, monkeypatch):
+        provider = "google"
+        _set_provider_config(monkeypatch, provider)
+        metadata = {
+            "authorization_endpoint": "https://issuer.example/google/authorize",
+        }
+
+        with (
+            patch("app.get_enabled_oauth_providers", return_value=[provider]),
+            patch("app._get_oidc_metadata", return_value=metadata),
+        ):
+            response = client.get(
+                f"/api/v2/auth/oauth/{provider}/authorize",
+                query_string={"redirect_uri": "billmanager://auth/callback"},
+            )
+
+        assert response.status_code == 200
+        data = response.get_json()["data"]
+        params = parse_qs(urlparse(data["auth_url"]).query)
+        assert data["redirect_uri"] == "billmanager://auth/callback"
+        assert params["redirect_uri"] == ["billmanager://auth/callback"]
+
+    def test_authorize_rejects_unlisted_callback(self, client, monkeypatch):
+        provider = "google"
+        _set_provider_config(monkeypatch, provider)
+
+        with patch("app.get_enabled_oauth_providers", return_value=[provider]):
+            response = client.get(
+                f"/api/v2/auth/oauth/{provider}/authorize",
+                query_string={"redirect_uri": "https://attacker.example/callback"},
+            )
+
+        assert response.status_code == 400
+        assert response.get_json()["error"] == "Redirect URI is not allowed"
+
+    def test_callback_reuses_redirect_bound_to_state(
+        self, client, db_session, admin_user, monkeypatch
+    ):
+        provider = "google"
+        client_id = _set_provider_config(monkeypatch, provider)
+        sub = "google-native-user"
+        _link_account(db_session, admin_user, provider, sub)
+        claims = {
+            "iss": f"https://issuer.example/{provider}",
+            "aud": client_id,
+            "nonce": "nonce-123",
+            "sub": sub,
+            "email": "admin@test.com",
+            "email_verified": True,
+        }
+
+        with _mock_oauth_dependencies(
+            provider,
+            client_id,
+            claims,
+            state_overrides={"redirect_uri": "billmanager://auth/callback"},
+        ) as mocks:
+            response = client.post(
+                f"/api/v2/auth/oauth/{provider}/callback",
+                json={
+                    "code": "auth-code",
+                    "state": "state-token",
+                    "redirect_uri": "billmanager://auth/callback",
+                },
+            )
+
+        assert response.status_code == 200
+        token_data = mocks["post"].call_args.kwargs["data"]
+        assert token_data["redirect_uri"] == "billmanager://auth/callback"
 
 
 # ---------------------------------------------------------------------------

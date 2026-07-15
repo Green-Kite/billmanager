@@ -57,6 +57,7 @@ class User(db.Model):
     change_token = db.Column(db.String(64), nullable=True)
     change_token_expires = db.Column(db.DateTime, nullable=True)
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    last_login_at = db.Column(db.DateTime, nullable=True, index=True)
 
     # SaaS multi-tenancy: track which admin created this user (null for self-registered admins)
     created_by_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True)
@@ -261,6 +262,44 @@ class Payment(db.Model):
 
     # Relationship to share (for shared bill payments)
     share = db.relationship('BillShare', backref=db.backref('payments', lazy=True))
+
+
+class ClientMutation(db.Model):
+    """Durable replay record for an authenticated offline mutation."""
+
+    __tablename__ = 'client_mutations'
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(
+        db.Integer,
+        db.ForeignKey('users.id', ondelete='CASCADE'),
+        nullable=False,
+    )
+    database_id = db.Column(
+        db.Integer,
+        db.ForeignKey('databases.id', ondelete='CASCADE'),
+        nullable=False,
+    )
+    client_mutation_id = db.Column(db.String(36), nullable=False)
+    operation = db.Column(db.String(100), nullable=False)
+    request_hash = db.Column(db.String(64), nullable=False)
+    response_status = db.Column(db.Integer, nullable=False)
+    response_body = db.Column(db.Text, nullable=False)
+    created_at = db.Column(
+        db.DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        db.UniqueConstraint(
+            'user_id',
+            'database_id',
+            'client_mutation_id',
+            name='uq_client_mutation_scope',
+        ),
+        db.Index('idx_client_mutations_created_at', 'created_at'),
+    )
 
 
 class CategoryBudget(db.Model):
@@ -494,6 +533,41 @@ class TelemetryLog(db.Model):
         return delta.days
 
 
+class TelemetrySettings(db.Model):
+    """Singleton instance-wide telemetry consent state."""
+    __tablename__ = 'telemetry_settings'
+
+    id = db.Column(db.Integer, primary_key=True, default=1)
+    state = db.Column(db.String(20), nullable=False, default='pending')
+    decided_by_user_id = db.Column(
+        db.Integer,
+        db.ForeignKey('users.id', ondelete='SET NULL'),
+        nullable=True,
+    )
+    decided_at = db.Column(db.DateTime, nullable=True)
+    created_at = db.Column(
+        db.DateTime,
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    updated_at = db.Column(
+        db.DateTime,
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    decided_by = db.relationship('User', foreign_keys=[decided_by_user_id])
+
+    __table_args__ = (
+        db.CheckConstraint('id = 1', name='ck_telemetry_settings_singleton'),
+        db.CheckConstraint(
+            "state IN ('pending', 'enabled', 'disabled')",
+            name='ck_telemetry_settings_state',
+        ),
+    )
+
+
 class BillShare(db.Model):
     """Tracks bill sharing between different users/accounts"""
     __tablename__ = 'bill_shares'
@@ -521,6 +595,11 @@ class BillShare(db.Model):
     accepted_at = db.Column(db.DateTime, nullable=True)
     expires_at = db.Column(db.DateTime, nullable=True)  # Only for email invites
     recipient_paid_date = db.Column(db.DateTime, nullable=True)  # When recipient marks their portion as paid
+    updated_at = db.Column(
+        db.DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
 
     # Relationships
     bill = db.relationship('Bill', backref=db.backref('shares', lazy=True, cascade="all, delete-orphan"))
@@ -666,7 +745,7 @@ class ShareAuditLog(db.Model):
 
     @classmethod
     def log_action(cls, action, bill_id, actor_user_id, share_id=None, affected_user_id=None,
-                   metadata=None, ip_address=None, user_agent=None):
+                   metadata=None, ip_address=None, user_agent=None, commit=True):
         """
         Create an audit log entry for a share operation.
 
@@ -700,7 +779,8 @@ class ShareAuditLog(db.Model):
             user_agent=user_agent
         )
         db.session.add(log_entry)
-        db.session.commit()
+        if commit:
+            db.session.commit()
         return log_entry
 
 

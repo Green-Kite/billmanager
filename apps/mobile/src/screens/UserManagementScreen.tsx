@@ -13,15 +13,18 @@ import {
 } from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useFocusEffect } from '@react-navigation/native';
+import { useTranslation } from 'react-i18next';
 import { api } from '../api/client';
 import { useTheme } from '../context/ThemeContext';
 import { useAuth } from '../context/AuthContext';
 import { useConfig } from '../context/ConfigContext';
-import { AdminUser, DatabaseInfo } from '../types';
+import { formatDate } from '../i18n/format';
+import { AdminUser } from '../types';
 
 type Props = NativeStackScreenProps<any, 'UserManagement'>;
 
 export default function UserManagementScreen({ navigation }: Props) {
+  const { t } = useTranslation();
   const { colors } = useTheme();
   const { user, databases } = useAuth();
   const { isSelfHosted } = useConfig();
@@ -53,18 +56,18 @@ export default function UserManagementScreen({ navigation }: Props) {
         setUsers(response.data);
         setError(null);
       } else {
-        setError(response.error || 'Failed to load users');
+        setError(response.error || t('mobileParity.userManagement.loadFailed'));
       }
     } catch (err) {
       if (__DEV__) {
         console.log('[UserManagementScreen] Error:', err);
       }
-      setError('Network error');
+      setError(t('mobileParity.common.networkError'));
     } finally {
       setIsLoading(false);
       setIsRefreshing(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     fetchUsers();
@@ -83,24 +86,28 @@ export default function UserManagementScreen({ navigation }: Props) {
 
   const handleToggleRole = (targetUser: AdminUser) => {
     if (targetUser.id === user?.id) {
-      Alert.alert('Error', 'You cannot change your own role');
+      Alert.alert(t('mobileParity.common.error'), t('mobileParity.userManagement.cannotChangeOwnRole'));
       return;
     }
 
     const newRole = targetUser.role === 'admin' ? 'user' : 'admin';
     Alert.alert(
-      'Change Role',
-      `Change ${targetUser.username}'s role from ${targetUser.role} to ${newRole}?`,
+      t('mobileParity.userManagement.changeRoleTitle'),
+      t('mobileParity.userManagement.changeRoleBody', {
+        name: targetUser.username,
+        current: targetUser.role === 'admin' ? t('mobileParity.common.admin') : t('mobileParity.common.user'),
+        next: newRole === 'admin' ? t('mobileParity.common.admin') : t('mobileParity.common.user'),
+      }),
       [
-        { text: 'Cancel', style: 'cancel' },
+        { text: t('mobileParity.common.cancel'), style: 'cancel' },
         {
-          text: 'Confirm',
+          text: t('mobileParity.common.confirm'),
           onPress: async () => {
             const result = await api.updateUserRole(targetUser.id, newRole);
             if (result.success) {
               fetchUsers();
             } else {
-              Alert.alert('Error', result.error || 'Failed to update role');
+              Alert.alert(t('mobileParity.common.error'), result.error || t('mobileParity.userManagement.updateRoleFailed'));
             }
           },
         },
@@ -110,25 +117,25 @@ export default function UserManagementScreen({ navigation }: Props) {
 
   const handleDeleteUser = (targetUser: AdminUser) => {
     if (targetUser.id === user?.id) {
-      Alert.alert('Error', 'You cannot delete your own account');
+      Alert.alert(t('mobileParity.common.error'), t('mobileParity.userManagement.cannotDeleteOwn'));
       return;
     }
 
     Alert.alert(
-      'Delete User',
-      `Are you sure you want to delete ${targetUser.username}? This action cannot be undone.`,
+      t('mobileParity.userManagement.deleteTitle'),
+      t('mobileParity.userManagement.deleteBody', { name: targetUser.username }),
       [
-        { text: 'Cancel', style: 'cancel' },
+        { text: t('mobileParity.common.cancel'), style: 'cancel' },
         {
-          text: 'Delete',
+          text: t('mobileParity.common.delete'),
           style: 'destructive',
           onPress: async () => {
             const result = await api.deleteUser(targetUser.id);
             if (result.success) {
               fetchUsers();
-              Alert.alert('Success', 'User deleted');
+              Alert.alert(t('mobileParity.common.success'), t('mobileParity.userManagement.deleted'));
             } else {
-              Alert.alert('Error', result.error || 'Failed to delete user');
+              Alert.alert(t('mobileParity.common.error'), result.error || t('mobileParity.userManagement.deleteFailed'));
             }
           },
         },
@@ -156,9 +163,9 @@ export default function UserManagementScreen({ navigation }: Props) {
     if (result.success) {
       setShowEditModal(false);
       fetchUsers();
-      Alert.alert('Success', 'User updated');
+      Alert.alert(t('mobileParity.common.success'), t('mobileParity.userManagement.updated'));
     } else {
-      Alert.alert('Error', result.error || 'Failed to update user');
+      Alert.alert(t('mobileParity.common.error'), result.error || t('mobileParity.userManagement.updateFailed'));
     }
   };
 
@@ -181,19 +188,19 @@ export default function UserManagementScreen({ navigation }: Props) {
 
   const handleCreateUser = async () => {
     if (!newUsername.trim()) {
-      Alert.alert('Error', 'Username is required');
+      Alert.alert(t('mobileParity.common.error'), t('mobileParity.userManagement.usernameRequired'));
       return;
     }
     if (!newPassword.trim()) {
-      Alert.alert('Error', 'Password is required');
+      Alert.alert(t('mobileParity.common.error'), t('mobileParity.userManagement.passwordRequired'));
       return;
     }
     if (newPassword.length < 8) {
-      Alert.alert('Error', 'Password must be at least 8 characters');
+      Alert.alert(t('mobileParity.common.error'), t('mobileParity.userManagement.passwordLength'));
       return;
     }
     if (selectedDatabases.length === 0) {
-      Alert.alert('Error', 'Please select at least one bill group');
+      Alert.alert(t('mobileParity.common.error'), t('mobileParity.userManagement.chooseGroup'));
       return;
     }
 
@@ -210,20 +217,10 @@ export default function UserManagementScreen({ navigation }: Props) {
     if (result.success) {
       setShowCreateModal(false);
       fetchUsers();
-      Alert.alert('Success', 'User created successfully');
+      Alert.alert(t('mobileParity.common.success'), t('mobileParity.userManagement.created'));
     } else {
-      Alert.alert('Error', result.error || 'Failed to create user');
+      Alert.alert(t('mobileParity.common.error'), result.error || t('mobileParity.userManagement.createFailed'));
     }
-  };
-
-  const formatDate = (dateStr?: string): string => {
-    if (!dateStr) return 'Unknown';
-    const date = new Date(dateStr);
-    return date.toLocaleDateString('en-US', {
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric',
-    });
   };
 
   const renderUser = ({ item }: { item: AdminUser }) => {
@@ -235,7 +232,7 @@ export default function UserManagementScreen({ navigation }: Props) {
           <View style={styles.userHeader}>
             <Text style={[styles.username, { color: colors.text }]}>
               {item.username}
-              {isCurrentUser && <Text style={{ color: colors.textMuted }}> (you)</Text>}
+              {isCurrentUser && <Text style={{ color: colors.textMuted }}> ({t('mobileParity.userManagement.you')})</Text>}
             </Text>
             <View style={[
               styles.roleBadge,
@@ -245,7 +242,7 @@ export default function UserManagementScreen({ navigation }: Props) {
                 styles.roleText,
                 { color: item.role === 'admin' ? '#fff' : colors.text }
               ]}>
-                {item.role}
+                {item.role === 'admin' ? t('mobileParity.common.admin') : t('mobileParity.common.user')}
               </Text>
             </View>
           </View>
@@ -253,7 +250,11 @@ export default function UserManagementScreen({ navigation }: Props) {
             <Text style={[styles.email, { color: colors.textMuted }]}>{item.email}</Text>
           )}
           <Text style={[styles.date, { color: colors.textMuted }]}>
-            Joined {formatDate(item.created_at)}
+            {t('mobileParity.userManagement.joined', {
+              date: item.created_at
+                ? formatDate(item.created_at, { month: 'short', day: 'numeric', year: 'numeric' })
+                : t('mobileParity.common.unknown'),
+            })}
           </Text>
         </View>
 
@@ -262,7 +263,7 @@ export default function UserManagementScreen({ navigation }: Props) {
             style={[styles.actionButton, { backgroundColor: colors.primary }]}
             onPress={() => openEditModal(item)}
           >
-            <Text style={styles.editButtonText}>Edit</Text>
+            <Text style={styles.editButtonText}>{t('mobileParity.common.edit')}</Text>
           </TouchableOpacity>
           {!isCurrentUser && (
             <>
@@ -271,14 +272,16 @@ export default function UserManagementScreen({ navigation }: Props) {
                 onPress={() => handleToggleRole(item)}
               >
                 <Text style={[styles.actionButtonText, { color: colors.text }]}>
-                  {item.role === 'admin' ? 'Demote' : 'Promote'}
+                  {item.role === 'admin'
+                    ? t('mobileParity.userManagement.demote')
+                    : t('mobileParity.userManagement.promote')}
                 </Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={[styles.actionButton, { backgroundColor: colors.danger }]}
                 onPress={() => handleDeleteUser(item)}
               >
-                <Text style={styles.deleteButtonText}>Delete</Text>
+                <Text style={styles.deleteButtonText}>{t('mobileParity.common.delete')}</Text>
               </TouchableOpacity>
             </>
           )}
@@ -299,13 +302,13 @@ export default function UserManagementScreen({ navigation }: Props) {
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       <View style={[styles.header, { backgroundColor: colors.surface }]}>
         <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton}>
-          <Text style={[styles.backButtonText, { color: colors.primary }]}>← Back</Text>
+          <Text style={[styles.backButtonText, { color: colors.primary }]}>← {t('mobileParity.common.back')}</Text>
         </TouchableOpacity>
-        <Text style={[styles.headerTitle, { color: colors.text }]}>User Management</Text>
+        <Text style={[styles.headerTitle, { color: colors.text }]}>{t('mobileParity.userManagement.title')}</Text>
         {/* Add User button - only for self-hosted mode */}
         {isSelfHosted ? (
           <TouchableOpacity onPress={openCreateModal} style={styles.addButton}>
-            <Text style={[styles.addButtonText, { color: colors.primary }]}>+ Add</Text>
+            <Text style={[styles.addButtonText, { color: colors.primary }]}>+ {t('mobileParity.common.add')}</Text>
           </TouchableOpacity>
         ) : (
           <View style={styles.placeholder} />
@@ -319,7 +322,7 @@ export default function UserManagementScreen({ navigation }: Props) {
             style={[styles.retryButton, { backgroundColor: colors.primary }]}
             onPress={fetchUsers}
           >
-            <Text style={styles.retryButtonText}>Retry</Text>
+            <Text style={styles.retryButtonText}>{t('mobileParity.common.retry')}</Text>
           </TouchableOpacity>
         </View>
       ) : (
@@ -338,12 +341,12 @@ export default function UserManagementScreen({ navigation }: Props) {
           }
           ListEmptyComponent={
             <View style={styles.emptyContainer}>
-              <Text style={[styles.emptyText, { color: colors.textMuted }]}>No users found</Text>
+              <Text style={[styles.emptyText, { color: colors.textMuted }]}>{t('mobileParity.userManagement.noUsers')}</Text>
             </View>
           }
           ListHeaderComponent={
             <Text style={[styles.sectionHeader, { color: colors.textMuted }]}>
-              {users.length} user{users.length !== 1 ? 's' : ''}
+              {t('mobileParity.userManagement.count', { count: users.length })}
             </Text>
           }
         />
@@ -359,7 +362,7 @@ export default function UserManagementScreen({ navigation }: Props) {
         <View style={styles.modalOverlay}>
           <View style={[styles.modalContent, { backgroundColor: colors.surface }]}>
             <Text style={[styles.modalTitle, { color: colors.text }]}>
-              Edit User
+              {t('mobileParity.userManagement.editUser')}
             </Text>
             {editingUser && (
               <Text style={[styles.modalSubtitle, { color: colors.textMuted }]}>
@@ -367,7 +370,7 @@ export default function UserManagementScreen({ navigation }: Props) {
               </Text>
             )}
 
-            <Text style={[styles.inputLabel, { color: colors.textMuted }]}>Email</Text>
+            <Text style={[styles.inputLabel, { color: colors.textMuted }]}>{t('mobileParity.userManagement.email')}</Text>
             <TextInput
               style={[styles.input, {
                 backgroundColor: colors.background,
@@ -376,13 +379,13 @@ export default function UserManagementScreen({ navigation }: Props) {
               }]}
               value={editEmail}
               onChangeText={setEditEmail}
-              placeholder="user@example.com"
+              placeholder={t('admin.users.emailPlaceholder')}
               placeholderTextColor={colors.textMuted}
               keyboardType="email-address"
               autoCapitalize="none"
             />
 
-            <Text style={[styles.inputLabel, { color: colors.textMuted }]}>Role</Text>
+            <Text style={[styles.inputLabel, { color: colors.textMuted }]}>{t('mobileParity.userManagement.role')}</Text>
             <View style={styles.roleSelector}>
               <TouchableOpacity
                 style={[
@@ -395,7 +398,7 @@ export default function UserManagementScreen({ navigation }: Props) {
                   styles.roleOptionText,
                   { color: editRole === 'user' ? '#fff' : colors.text }
                 ]}>
-                  User
+                  {t('mobileParity.common.user')}
                 </Text>
               </TouchableOpacity>
               <TouchableOpacity
@@ -409,7 +412,7 @@ export default function UserManagementScreen({ navigation }: Props) {
                   styles.roleOptionText,
                   { color: editRole === 'admin' ? '#fff' : colors.text }
                 ]}>
-                  Admin
+                  {t('mobileParity.common.admin')}
                 </Text>
               </TouchableOpacity>
             </View>
@@ -420,7 +423,7 @@ export default function UserManagementScreen({ navigation }: Props) {
                 onPress={() => setShowEditModal(false)}
                 disabled={isSubmitting}
               >
-                <Text style={[styles.cancelButtonText, { color: colors.text }]}>Cancel</Text>
+                <Text style={[styles.cancelButtonText, { color: colors.text }]}>{t('mobileParity.common.cancel')}</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={[styles.saveButton, { backgroundColor: colors.primary }, isSubmitting && styles.buttonDisabled]}
@@ -430,7 +433,7 @@ export default function UserManagementScreen({ navigation }: Props) {
                 {isSubmitting ? (
                   <ActivityIndicator color="#fff" size="small" />
                 ) : (
-                  <Text style={styles.saveButtonText}>Save</Text>
+                  <Text style={styles.saveButtonText}>{t('mobileParity.common.save')}</Text>
                 )}
               </TouchableOpacity>
             </View>
@@ -447,9 +450,9 @@ export default function UserManagementScreen({ navigation }: Props) {
       >
         <View style={styles.modalOverlay}>
           <View style={[styles.modalContent, { backgroundColor: colors.surface }]}>
-            <Text style={[styles.modalTitle, { color: colors.text }]}>Create User</Text>
+            <Text style={[styles.modalTitle, { color: colors.text }]}>{t('mobileParity.userManagement.createUser')}</Text>
 
-            <Text style={[styles.inputLabel, { color: colors.textMuted }]}>Username *</Text>
+            <Text style={[styles.inputLabel, { color: colors.textMuted }]}>{t('mobileParity.userManagement.usernameLabel')}</Text>
             <TextInput
               style={[styles.input, {
                 backgroundColor: colors.background,
@@ -458,13 +461,13 @@ export default function UserManagementScreen({ navigation }: Props) {
               }]}
               value={newUsername}
               onChangeText={setNewUsername}
-              placeholder="Enter username"
+              placeholder={t('mobileParity.userManagement.usernamePlaceholder')}
               placeholderTextColor={colors.textMuted}
               autoCapitalize="none"
               autoCorrect={false}
             />
 
-            <Text style={[styles.inputLabel, { color: colors.textMuted }]}>Email (optional)</Text>
+            <Text style={[styles.inputLabel, { color: colors.textMuted }]}>{t('mobileParity.userManagement.emailOptional')}</Text>
             <TextInput
               style={[styles.input, {
                 backgroundColor: colors.background,
@@ -473,13 +476,13 @@ export default function UserManagementScreen({ navigation }: Props) {
               }]}
               value={newEmail}
               onChangeText={setNewEmail}
-              placeholder="user@example.com"
+              placeholder={t('admin.users.emailPlaceholder')}
               placeholderTextColor={colors.textMuted}
               keyboardType="email-address"
               autoCapitalize="none"
             />
 
-            <Text style={[styles.inputLabel, { color: colors.textMuted }]}>Password *</Text>
+            <Text style={[styles.inputLabel, { color: colors.textMuted }]}>{t('mobileParity.userManagement.passwordLabel')}</Text>
             <TextInput
               style={[styles.input, {
                 backgroundColor: colors.background,
@@ -488,12 +491,12 @@ export default function UserManagementScreen({ navigation }: Props) {
               }]}
               value={newPassword}
               onChangeText={setNewPassword}
-              placeholder="At least 8 characters"
+              placeholder={t('mobileParity.userManagement.passwordPlaceholder')}
               placeholderTextColor={colors.textMuted}
               secureTextEntry
             />
 
-            <Text style={[styles.inputLabel, { color: colors.textMuted }]}>Role</Text>
+            <Text style={[styles.inputLabel, { color: colors.textMuted }]}>{t('mobileParity.userManagement.role')}</Text>
             <View style={styles.roleSelector}>
               <TouchableOpacity
                 style={[
@@ -506,7 +509,7 @@ export default function UserManagementScreen({ navigation }: Props) {
                   styles.roleOptionText,
                   { color: newRole === 'user' ? '#fff' : colors.text }
                 ]}>
-                  User
+                  {t('mobileParity.common.user')}
                 </Text>
               </TouchableOpacity>
               <TouchableOpacity
@@ -520,12 +523,12 @@ export default function UserManagementScreen({ navigation }: Props) {
                   styles.roleOptionText,
                   { color: newRole === 'admin' ? '#fff' : colors.text }
                 ]}>
-                  Admin
+                  {t('mobileParity.common.admin')}
                 </Text>
               </TouchableOpacity>
             </View>
 
-            <Text style={[styles.inputLabel, { color: colors.textMuted }]}>Bill Group Access *</Text>
+            <Text style={[styles.inputLabel, { color: colors.textMuted }]}>{t('mobileParity.userManagement.billGroupAccess')}</Text>
             <View style={styles.databaseList}>
               {databases.map((db) => (
                 <TouchableOpacity
@@ -559,7 +562,7 @@ export default function UserManagementScreen({ navigation }: Props) {
                 onPress={() => setShowCreateModal(false)}
                 disabled={isCreating}
               >
-                <Text style={[styles.cancelButtonText, { color: colors.text }]}>Cancel</Text>
+                <Text style={[styles.cancelButtonText, { color: colors.text }]}>{t('mobileParity.common.cancel')}</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={[styles.saveButton, { backgroundColor: colors.primary }, isCreating && styles.buttonDisabled]}
@@ -569,7 +572,7 @@ export default function UserManagementScreen({ navigation }: Props) {
                 {isCreating ? (
                   <ActivityIndicator color="#fff" size="small" />
                 ) : (
-                  <Text style={styles.saveButtonText}>Create</Text>
+                  <Text style={styles.saveButtonText}>{t('mobileParity.common.create')}</Text>
                 )}
               </TouchableOpacity>
             </View>

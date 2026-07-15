@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <string name="billmanager_widget_name">Nächste BillManager-Rechnung</string>
+  <string name="billmanager_widget_description">Sehen Sie die nächste Fälligkeit, ohne BillManager zu öffnen.</string>
+  <string name="billmanager_widget_loading">Anstehende Rechnungen werden geladen…</string>
+  <string name="billmanager_widget_next_up">Als Nächstes</string>
+  <string name="billmanager_widget_no_upcoming">Keine anstehenden Rechnungen</string>
+  <string name="billmanager_widget_caught_up">Alles ist erledigt</string>
+  <string name="billmanager_widget_remaining_this_month">%1$s verbleiben diesen Monat</string>
+</resources>

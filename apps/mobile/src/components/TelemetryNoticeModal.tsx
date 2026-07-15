@@ -9,6 +9,7 @@ import {
   Linking,
 } from 'react-native';
 import { AlertCircle } from 'lucide-react-native';
+import { useTranslation } from 'react-i18next';
 import { useTheme } from '../context/ThemeContext';
 import { api } from '../api/client';
 
@@ -18,6 +19,7 @@ interface TelemetryNoticeModalProps {
 }
 
 export default function TelemetryNoticeModal({ visible, onClose }: TelemetryNoticeModalProps) {
+  const { t } = useTranslation();
   const { colors } = useTheme();
   const [loading, setLoading] = useState(false);
   const styles = createStyles(colors);
@@ -64,40 +66,33 @@ export default function TelemetryNoticeModal({ visible, onClose }: TelemetryNoti
       <View style={styles.container}>
         <View style={styles.header}>
           <AlertCircle size={24} color={colors.primary} />
-          <Text style={styles.title}>Anonymous Usage Statistics</Text>
+          <Text style={styles.title}>{t('mobileParity.telemetry.title')}</Text>
         </View>
 
         <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
-          <Text style={styles.description}>
-            BillManager collects <Text style={styles.bold}>anonymous usage statistics</Text> to help improve the product.
-            This data helps us understand which features are most valuable and guide development priorities.
-          </Text>
+          <Text style={styles.description}>{t('mobileParity.telemetry.description')}</Text>
 
           <View style={styles.section}>
-            <Text style={styles.sectionTitle}>What we collect:</Text>
-            <Text style={styles.bullet}>• Total users, bills, and databases (counts only)</Text>
-            <Text style={styles.bullet}>• Feature usage (auto-pay, variable bills, mobile devices)</Text>
-            <Text style={styles.bullet}>• Platform info (Python version, OS, database type)</Text>
-            <Text style={styles.bullet}>• Anonymous instance ID and app version</Text>
+            <Text style={styles.sectionTitle}>{t('mobileParity.telemetry.collectedTitle')}</Text>
+            <Text style={styles.bullet}>• {t('mobileParity.telemetry.totalCounts')}</Text>
+            <Text style={styles.bullet}>• {t('mobileParity.telemetry.featureUsage')}</Text>
+            <Text style={styles.bullet}>• {t('mobileParity.telemetry.platformInfo')}</Text>
+            <Text style={styles.bullet}>• {t('mobileParity.telemetry.instanceVersion')}</Text>
           </View>
 
           <View style={styles.section}>
-            <Text style={styles.sectionTitle}>What we never collect:</Text>
-            <Text style={styles.bullet}>• Personal information (names, emails, addresses)</Text>
-            <Text style={styles.bullet}>• Bill amounts or financial data</Text>
-            <Text style={styles.bullet}>• Bill names or descriptions</Text>
-            <Text style={styles.bullet}>• Payment history or dates</Text>
+            <Text style={styles.sectionTitle}>{t('mobileParity.telemetry.neverTitle')}</Text>
+            <Text style={styles.bullet}>• {t('mobileParity.telemetry.noPersonalInformation')}</Text>
+            <Text style={styles.bullet}>• {t('mobileParity.telemetry.noFinancialData')}</Text>
+            <Text style={styles.bullet}>• {t('mobileParity.telemetry.noBillContent')}</Text>
+            <Text style={styles.bullet}>• {t('mobileParity.telemetry.noPaymentHistory')}</Text>
           </View>
 
-          <TouchableOpacity onPress={openDocumentation} style={styles.linkContainer}>
-            <Text style={styles.linkText}>
-              See TELEMETRY.md for full details
-            </Text>
+          <TouchableOpacity accessibilityRole="link" onPress={openDocumentation} style={styles.linkContainer}>
+            <Text style={styles.linkText}>{t('mobileParity.telemetry.documentation')}</Text>
           </TouchableOpacity>
 
-          <Text style={styles.footnote}>
-            You can change this preference at any time. All telemetry submissions are logged locally for transparency.
-          </Text>
+          <Text style={styles.footnote}>{t('mobileParity.telemetry.footnote')}</Text>
         </ScrollView>
 
         <View style={styles.footer}>
@@ -106,18 +101,14 @@ export default function TelemetryNoticeModal({ visible, onClose }: TelemetryNoti
             onPress={handleOptOut}
             disabled={loading}
           >
-            <Text style={[styles.buttonText, styles.secondaryButtonText]}>
-              Opt Out
-            </Text>
+            <Text style={[styles.buttonText, styles.secondaryButtonText]}>{t('mobileParity.telemetry.optOut')}</Text>
           </TouchableOpacity>
           <TouchableOpacity
             style={[styles.button, styles.primaryButton]}
             onPress={handleAccept}
             disabled={loading}
           >
-            <Text style={[styles.buttonText, styles.primaryButtonText]}>
-              Accept & Continue
-            </Text>
+            <Text style={[styles.buttonText, styles.primaryButtonText]}>{t('mobileParity.telemetry.accept')}</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -155,9 +146,6 @@ const createStyles = (colors: any) => StyleSheet.create({
     lineHeight: 22,
     color: colors.text,
     marginBottom: 20,
-  },
-  bold: {
-    fontWeight: '600',
   },
   section: {
     marginBottom: 20,

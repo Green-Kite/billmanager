@@ -29,14 +29,32 @@ servers:
 tags:
   - name: Authentication
     description: Login, logout, and token management
+  - name: Account
+    description: Current-account profile and lifecycle
+  - name: Billing
+    description: SaaS subscription configuration and customer actions
   - name: Bills
     description: Bill management operations
   - name: Bill Shares
     description: Share bills with other users and manage shared bill payments
+  - name: Settlements
+    description: Shared-bill balances and settlement state
   - name: Payments
     description: Payment recording and history
+  - name: Budgets
+    description: Category budget targets and summaries
   - name: Statistics
     description: Analytics and reporting
+  - name: Administration
+    description: Admin-only users, invitations, and bill-group management
+  - name: Notifications
+    description: Notification configuration and administrative delivery tools
+  - name: Devices
+    description: Legacy remote-notification device registrations
+  - name: Sync
+    description: Offline cache bootstrap, deltas, and mutation push
+  - name: Telemetry
+    description: Account-owner telemetry consent
   - name: Utilities
     description: Helper endpoints
 
@@ -45,6 +63,7 @@ paths:
     post:
       tags: [Authentication]
       summary: Login and get JWT tokens
+      operationId: login
       requestBody:
         required: true
         content:
@@ -99,6 +118,7 @@ paths:
     post:
       tags: [Authentication]
       summary: Refresh access token
+      operationId: refreshAccessToken
       requestBody:
         required: true
         content:
@@ -142,6 +162,7 @@ paths:
     post:
       tags: [Authentication]
       summary: Logout and revoke refresh token
+      operationId: logout
       requestBody:
         content:
           application/json:
@@ -162,6 +183,7 @@ paths:
     post:
       tags: [Authentication]
       summary: Logout from all devices
+      operationId: logoutAllDevices
       security:
         - bearerAuth: []
       responses:
@@ -171,38 +193,92 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SuccessResponse'
+        '401': {$ref: '#/components/responses/Unauthorized'}
 
   /auth/change-password:
     post:
       tags: [Authentication]
-      summary: Change password using change token
+      summary: Change a password using a change token or the authenticated current password
+      operationId: changeForcedPassword
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [change_token, new_password]
+              required: [new_password]
               properties:
                 change_token:
                   type: string
+                  description: Required for a forced-password-change flow.
+                current_password:
+                  type: string
+                  description: Requires a valid bearer token and changes the signed-in user's password.
                 new_password:
                   type: string
                   minLength: 8
                 device_info:
                   type: string
+              anyOf:
+                - required: [change_token]
+                - required: [current_password]
       responses:
         '200':
-          description: Password changed, returns new tokens
+          description: Password changed; a change-token flow also returns new tokens
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/LoginResponse'
+                oneOf:
+                  - $ref: '#/components/schemas/LoginResponse'
+                  - $ref: '#/components/schemas/SuccessResponse'
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+
+  /auth/reauthenticate:
+    post:
+      tags: [Authentication]
+      summary: Verify the signed-in user's password without rotating credentials
+      operationId: reauthenticateCurrentUser
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                password:
+                  type: string
+                  format: password
+      responses:
+        '200':
+          description: Password verified
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success:
+                    type: boolean
+                    const: true
+                  data:
+                    type: object
+                    required: [reauthenticated]
+                    properties:
+                      reauthenticated:
+                        type: boolean
+                        const: true
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
 
   /me:
     get:
       tags: [Authentication]
       summary: Get current user info
+      operationId: getCurrentUser
       security:
         - bearerAuth: []
       responses:
@@ -232,11 +308,13 @@ paths:
                       current_db:
                         type: string
                         nullable: true
+        '401': {$ref: '#/components/responses/Unauthorized'}
 
   /bills:
     get:
       tags: [Bills]
       summary: List all bills
+      operationId: listBills
       security:
         - bearerAuth: []
       parameters:
@@ -260,9 +338,13 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/Bill'
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
     post:
       tags: [Bills]
       summary: Create a new bill
+      operationId: createBill
       security:
         - bearerAuth: []
       parameters:
@@ -272,10 +354,13 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/BillInput'
+              $ref: '#/components/schemas/BillCreateInput'
       responses:
         '201':
           description: Bill created
+          headers:
+            Idempotency-Replayed:
+              $ref: '#/components/headers/IdempotencyReplayed'
           content:
             application/json:
               schema:
@@ -290,11 +375,23 @@ paths:
                         type: integer
                       message:
                         type: string
+                      last_updated:
+                        type: string
+                        format: date-time
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
 
   /bills/{bill_id}:
     get:
       tags: [Bills]
       summary: Get a single bill
+      operationId: getBill
       security:
         - bearerAuth: []
       parameters:
@@ -312,80 +409,161 @@ paths:
                     type: boolean
                   data:
                     $ref: '#/components/schemas/Bill'
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
     put:
       tags: [Bills]
       summary: Update a bill
+      operationId: updateBill
       security:
         - bearerAuth: []
       parameters:
         - $ref: '#/components/parameters/XDatabase'
         - $ref: '#/components/parameters/BillId'
       requestBody:
+        required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/BillInput'
+              $ref: '#/components/schemas/BillUpdateInput'
       responses:
         '200':
           description: Bill updated
+          headers:
+            Idempotency-Replayed:
+              $ref: '#/components/headers/IdempotencyReplayed'
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
     delete:
       tags: [Bills]
       summary: Archive a bill
+      operationId: archiveBill
       security:
         - bearerAuth: []
       parameters:
         - $ref: '#/components/parameters/XDatabase'
         - $ref: '#/components/parameters/BillId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MutationControl'
       responses:
         '200':
           description: Bill archived
+          headers:
+            Idempotency-Replayed:
+              $ref: '#/components/headers/IdempotencyReplayed'
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
 
   /bills/{bill_id}/unarchive:
     post:
       tags: [Bills]
       summary: Unarchive a bill
+      operationId: unarchiveBill
       security:
         - bearerAuth: []
       parameters:
         - $ref: '#/components/parameters/XDatabase'
         - $ref: '#/components/parameters/BillId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MutationControl'
       responses:
         '200':
           description: Bill unarchived
+          headers:
+            Idempotency-Replayed:
+              $ref: '#/components/headers/IdempotencyReplayed'
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
 
   /bills/{bill_id}/permanent:
     delete:
       tags: [Bills]
       summary: Permanently delete a bill
+      operationId: deleteBillPermanently
       security:
         - bearerAuth: []
       parameters:
         - $ref: '#/components/parameters/XDatabase'
         - $ref: '#/components/parameters/BillId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MutationControl'
       responses:
         '200':
           description: Bill permanently deleted
+          headers:
+            Idempotency-Replayed:
+              $ref: '#/components/headers/IdempotencyReplayed'
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
 
   /bills/{bill_id}/shares:
     get:
       tags: [Bill Shares]
       summary: Get list of shares for a bill (owner only)
+      operationId: listBillShares
+      x-capability: sharing
       description: Returns all shares for a bill. Only the bill owner can view shares.
       security:
         - bearerAuth: []
@@ -413,10 +591,16 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+
+  /bills/{bill_id}/share:
     post:
       tags: [Bill Shares]
       summary: Create a new bill share
-      description: Share a bill with another user by username or email
+      operationId: createBillShare
+      x-capability: sharing
+      description: Share a bill with another user by username or email.
       security:
         - bearerAuth: []
       parameters:
@@ -427,45 +611,34 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              required: [shared_with, split_type]
-              properties:
-                shared_with:
-                  type: string
-                  description: Username or email of user to share with
-                  example: "john@example.com"
-                split_type:
-                  type: string
-                  enum: [percentage, fixed, equal]
-                  description: How to split the bill
-                split_value:
-                  type: number
-                  description: Split amount (required for percentage and fixed types)
-                  example: 50
+              $ref: '#/components/schemas/BillShareCreateInput'
       responses:
         '201':
           description: Share created successfully
+          headers:
+            Idempotency-Replayed:
+              $ref: '#/components/headers/IdempotencyReplayed'
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                    example: true
-                  data:
-                    $ref: '#/components/schemas/BillShare'
+                $ref: '#/components/schemas/BillShareResponse'
         '400':
-          description: Invalid request or duplicate share
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
 
   /shared-bills/pending:
     get:
       tags: [Bill Shares]
       summary: Get pending shares for current user
+      operationId: listPendingShares
+      x-capability: sharing
       description: Returns all bill shares pending acceptance by the current user across all databases
       security:
         - bearerAuth: []
@@ -484,223 +657,201 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/BillShareWithBillInfo'
+        '401': {$ref: '#/components/responses/Unauthorized'}
 
   /shares/{share_id}/accept:
     post:
       tags: [Bill Shares]
       summary: Accept a pending share
+      operationId: acceptShare
+      x-capability: sharing
       description: Accept a bill share invitation
       security:
         - bearerAuth: []
       parameters:
-        - name: share_id
-          in: path
-          required: true
-          schema:
-            type: integer
+        - $ref: '#/components/parameters/ShareId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/MutationControl'}
       responses:
         '200':
           description: Share accepted
+          headers:
+            Idempotency-Replayed:
+              $ref: '#/components/headers/IdempotencyReplayed'
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SuccessResponse'
-        '403':
-          description: Not authorized to accept this share
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/ActionResponse'
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
 
   /shares/{share_id}/decline:
     post:
       tags: [Bill Shares]
       summary: Decline a pending share
+      operationId: declineShare
+      x-capability: sharing
       description: Decline a bill share invitation
       security:
         - bearerAuth: []
       parameters:
-        - name: share_id
-          in: path
-          required: true
-          schema:
-            type: integer
+        - $ref: '#/components/parameters/ShareId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/MutationControl'}
       responses:
         '200':
           description: Share declined
+          headers:
+            Idempotency-Replayed:
+              $ref: '#/components/headers/IdempotencyReplayed'
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SuccessResponse'
+                $ref: '#/components/schemas/ActionResponse'
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
 
   /shares/{share_id}/mark-paid:
     post:
       tags: [Bill Shares]
       summary: Mark recipient portion as paid
+      operationId: toggleSharePaid
+      x-capability: settlements
       description: Allows share recipient to mark their portion of the bill as paid
       security:
         - bearerAuth: []
       parameters:
-        - name: share_id
-          in: path
-          required: true
-          schema:
-            type: integer
+        - $ref: '#/components/parameters/ShareId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/MutationControl'}
       responses:
         '200':
-          description: Portion marked as paid
+          description: Recipient payment state toggled
+          headers:
+            Idempotency-Replayed:
+              $ref: '#/components/headers/IdempotencyReplayed'
           content:
             application/json:
-              schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                    example: true
-                  data:
-                    type: object
-                    properties:
-                      message:
-                        type: string
-                        example: "Your portion has been marked as paid"
-                      paid_date:
-                        type: string
-                        format: date-time
-        '403':
-          description: Only share recipient can mark their portion as paid
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
+              schema: {$ref: '#/components/schemas/ActionResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
 
   /shares/{share_id}:
     put:
       tags: [Bill Shares]
       summary: Update share split configuration (owner only)
+      operationId: updateShare
+      x-capability: sharing
       description: Update the split type and value for an existing share. Only the bill owner can update shares.
       security:
         - bearerAuth: []
       parameters:
-        - name: share_id
-          in: path
-          required: true
-          schema:
-            type: integer
+        - $ref: '#/components/parameters/ShareId'
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              properties:
-                split_type:
-                  type: string
-                  enum: [percentage, fixed, equal, null]
-                  description: How to split the bill (null for full amount)
-                split_value:
-                  type: number
-                  nullable: true
-                  description: Split amount (required for percentage and fixed types)
+              $ref: '#/components/schemas/BillShareUpdateInput'
       responses:
         '200':
           description: Share updated successfully
+          headers:
+            Idempotency-Replayed:
+              $ref: '#/components/headers/IdempotencyReplayed'
           content:
             application/json:
-              schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                    example: true
-                  data:
-                    type: object
-                    properties:
-                      message:
-                        type: string
-                        example: "Share updated"
-        '403':
-          description: Only bill owner can update shares
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
+              schema: {$ref: '#/components/schemas/ActionResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
     delete:
       tags: [Bill Shares]
       summary: Revoke/delete a share (owner only)
+      operationId: revokeShare
+      x-capability: sharing
       description: Revoke or permanently delete a bill share. Only the bill owner can delete shares.
       security:
         - bearerAuth: []
       parameters:
-        - name: share_id
-          in: path
-          required: true
-          schema:
-            type: integer
+        - $ref: '#/components/parameters/ShareId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/MutationControl'}
       responses:
         '200':
           description: Share revoked/deleted successfully
+          headers:
+            Idempotency-Replayed:
+              $ref: '#/components/headers/IdempotencyReplayed'
           content:
             application/json:
-              schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                    example: true
-                  data:
-                    type: object
-                    properties:
-                      message:
-                        type: string
-                        example: "Share revoked"
-        '403':
-          description: Only bill owner can delete shares
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
+              schema: {$ref: '#/components/schemas/ActionResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
 
   /shares/{share_id}/leave:
     post:
       tags: [Bill Shares]
       summary: Leave a shared bill (recipient only)
+      operationId: leaveShare
+      x-capability: sharing
       description: Allows a share recipient to leave a shared bill
       security:
         - bearerAuth: []
       parameters:
-        - name: share_id
-          in: path
-          required: true
-          schema:
-            type: integer
+        - $ref: '#/components/parameters/ShareId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/MutationControl'}
       responses:
         '200':
           description: Successfully left the share
+          headers:
+            Idempotency-Replayed:
+              $ref: '#/components/headers/IdempotencyReplayed'
           content:
             application/json:
-              schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                    example: true
-                  data:
-                    type: object
-                    properties:
-                      message:
-                        type: string
-                        example: "You have left the shared bill"
-        '403':
-          description: Only share recipient can leave
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
+              schema: {$ref: '#/components/schemas/ActionResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
 
   /share-info:
     get:
       tags: [Bill Shares]
       summary: Get share invitation details by token (public)
+      operationId: getShareInviteInfo
+      x-capability: sharing
       description: Retrieve information about a share invitation using the invite token. No authentication required.
       parameters:
         - name: token
@@ -756,6 +907,8 @@ paths:
     post:
       tags: [Bill Shares]
       summary: Accept share invitation by token
+      operationId: acceptShareByToken
+      x-capability: sharing
       description: Accept a bill share invitation using the invite token. Requires authentication.
       security:
         - bearerAuth: []
@@ -764,15 +917,13 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              required: [token]
-              properties:
-                token:
-                  type: string
-                  description: The invitation token
+              $ref: '#/components/schemas/ShareTokenMutationInput'
       responses:
         '200':
           description: Share accepted successfully
+          headers:
+            Idempotency-Replayed:
+              $ref: '#/components/headers/IdempotencyReplayed'
           content:
             application/json:
               schema:
@@ -801,38 +952,32 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/Conflict'}
 
   /bills/{bill_id}/pay:
     post:
       tags: [Payments]
       summary: Record a payment for a bill
+      operationId: recordBillPayment
       security:
         - bearerAuth: []
       parameters:
         - $ref: '#/components/parameters/XDatabase'
         - $ref: '#/components/parameters/BillId'
       requestBody:
+        required: true
         content:
           application/json:
             schema:
-              type: object
-              properties:
-                amount:
-                  type: number
-                  description: Payment amount (defaults to bill amount)
-                payment_date:
-                  type: string
-                  format: date
-                  description: Payment date (defaults to today)
-                notes:
-                  type: string
-                advance_due:
-                  type: boolean
-                  default: true
-                  description: Advance due date to next occurrence
+              $ref: '#/components/schemas/PaymentCreateInput'
       responses:
         '200':
           description: Payment recorded
+          headers:
+            Idempotency-Replayed:
+              $ref: '#/components/headers/IdempotencyReplayed'
           content:
             application/json:
               schema:
@@ -847,11 +992,28 @@ paths:
                         type: integer
                       message:
                         type: string
+                      updated_at:
+                        type: string
+                        format: date-time
+                      bill_last_updated:
+                        type: string
+                        format: date-time
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
 
   /bills/{bill_id}/payments:
     get:
       tags: [Payments]
       summary: Get payment history for a bill
+      operationId: listBillPayments
       security:
         - bearerAuth: []
       parameters:
@@ -871,11 +1033,15 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/Payment'
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
 
   /payments:
     get:
       tags: [Payments]
       summary: Get all payments across all bills
+      operationId: listPayments
       security:
         - bearerAuth: []
       parameters:
@@ -894,11 +1060,15 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/PaymentWithBill'
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
 
   /payments/{payment_id}:
     put:
       tags: [Payments]
       summary: Update a payment
+      operationId: updatePayment
       security:
         - bearerAuth: []
       parameters:
@@ -909,28 +1079,35 @@ paths:
           schema:
             type: integer
       requestBody:
+        required: true
         content:
           application/json:
             schema:
-              type: object
-              properties:
-                amount:
-                  type: number
-                payment_date:
-                  type: string
-                  format: date
-                notes:
-                  type: string
+              $ref: '#/components/schemas/PaymentUpdateInput'
       responses:
         '200':
           description: Payment updated
+          headers:
+            Idempotency-Replayed:
+              $ref: '#/components/headers/IdempotencyReplayed'
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
     delete:
       tags: [Payments]
       summary: Delete a payment
+      operationId: deletePayment
       security:
         - bearerAuth: []
       parameters:
@@ -940,18 +1117,38 @@ paths:
           required: true
           schema:
             type: integer
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MutationControl'
       responses:
         '200':
           description: Payment deleted
+          headers:
+            Idempotency-Replayed:
+              $ref: '#/components/headers/IdempotencyReplayed'
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
 
   /accounts:
     get:
       tags: [Utilities]
       summary: Get list of account names
+      operationId: listAccounts
       security:
         - bearerAuth: []
       parameters:
@@ -971,11 +1168,15 @@ paths:
                     items:
                       type: string
                     example: ["Chase Checking", "Capital One", "Cash"]
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
 
   /stats/monthly:
     get:
       tags: [Statistics]
       summary: Get monthly payment totals
+      operationId: getMonthlyStatistics
       security:
         - bearerAuth: []
       parameters:
@@ -1002,11 +1203,15 @@ paths:
                     example:
                       "2024-01": {"expenses": 1500.00, "deposits": 3000.00}
                       "2024-02": {"expenses": 1200.00, "deposits": 3000.00}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
 
   /process-auto-payments:
     post:
       tags: [Utilities]
       summary: Process auto-payments for due bills
+      operationId: processAutoPayments
       security:
         - bearerAuth: []
       parameters:
@@ -1037,11 +1242,1697 @@ paths:
                               type: string
                             amount:
                               type: number
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
+  /invite-info:
+    get:
+      tags: [Authentication]
+      summary: Get a team invitation by token
+      operationId: getTeamInvitationInfo
+      x-capability: administration
+      security: []
+      parameters:
+        - name: token
+          in: query
+          required: true
+          schema: {type: string}
+      responses:
+        '200':
+          description: Invitation email, inviter, and expiration
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ObjectDataResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+
+  /accept-invite:
+    post:
+      tags: [Authentication]
+      summary: Accept a team invitation and create an account
+      operationId: acceptTeamInvitation
+      x-capability: administration
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/InvitationAcceptanceInput'}
+      responses:
+        '201':
+          description: Invitation accepted and account created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ObjectDataResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+
+  /auth/register:
+    post:
+      tags: [Authentication]
+      summary: Register a new account
+      operationId: registerAccount
+      x-capability: registration
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegistrationInput'
+      responses:
+        '201':
+          description: Account registered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ObjectDataResponse'
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+
+  /auth/verify-email:
+    post:
+      tags: [Authentication]
+      summary: Verify an email address
+      operationId: verifyEmail
+      x-capability: registration
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TokenInput'
+      responses:
+        '200':
+          description: Email verified
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ActionResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /auth/resend-verification:
+    post:
+      tags: [Authentication]
+      summary: Resend an email verification message
+      operationId: resendEmailVerification
+      x-capability: registration
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/EmailInput'}
+      responses:
+        '200':
+          description: Request accepted
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ActionResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+
+  /auth/forgot-password:
+    post:
+      tags: [Authentication]
+      summary: Request a password reset email
+      operationId: requestPasswordReset
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/EmailInput'}
+      responses:
+        '200':
+          description: Request accepted regardless of account existence
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ActionResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+
+  /auth/reset-password:
+    post:
+      tags: [Authentication]
+      summary: Reset a password with a one-time token
+      operationId: resetPassword
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ResetPasswordInput'}
+      responses:
+        '200':
+          description: Password reset
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ActionResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+
+  /account:
+    delete:
+      tags: [Account]
+      summary: Permanently delete the current account
+      operationId: deleteCurrentAccount
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AccountDeleteInput'}
+      responses:
+        '200':
+          description: Account deleted
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ActionResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
+  /auth/oauth/providers:
+    get:
+      tags: [Authentication]
+      summary: List configured OAuth providers
+      operationId: listOAuthProviders
+      x-capability: oauth
+      security: []
+      responses:
+        '200':
+          description: Configured providers
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ListDataResponse'}
+
+  /auth/oauth/{provider}/authorize:
+    get:
+      tags: [Authentication]
+      summary: Start an OAuth authorization flow
+      operationId: authorizeOAuthProvider
+      x-capability: oauth
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/OAuthProvider'
+        - name: flow
+          in: query
+          schema:
+            type: string
+            enum: [login, link]
+            default: login
+        - name: redirect_uri
+          in: query
+          schema:
+            type: string
+            example: billmanager://auth/callback
+          description: Exact allowlisted callback URI; defaults to the existing web callback
+      responses:
+        '200':
+          description: Authorization URL and state
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ObjectDataResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+
+  /auth/oauth/{provider}/callback:
+    post:
+      tags: [Authentication]
+      summary: Complete an OAuth authorization flow
+      operationId: completeOAuthCallback
+      x-capability: oauth
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/OAuthProvider'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/OAuthCallbackInput'}
+      responses:
+        '200':
+          description: Login tokens or linked-account result
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ObjectDataResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+
+  /auth/oauth/accounts:
+    get:
+      tags: [Authentication]
+      summary: List linked OAuth accounts
+      operationId: listLinkedOAuthAccounts
+      x-capability: oauth
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Linked accounts
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ListDataResponse'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+
+  /auth/oauth/{provider}:
+    delete:
+      tags: [Authentication]
+      summary: Unlink an OAuth provider
+      operationId: unlinkOAuthProvider
+      x-capability: oauth
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/OAuthProvider'
+      responses:
+        '200':
+          description: Provider unlinked
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ActionResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /auth/2fa/status:
+    get:
+      tags: [Authentication]
+      summary: Get two-factor authentication status
+      operationId: getTwoFactorStatus
+      x-capability: email_otp
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Two-factor status
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ObjectDataResponse'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+
+  /auth/2fa/setup/email:
+    post:
+      tags: [Authentication]
+      summary: Start email OTP setup
+      operationId: startEmailOtpSetup
+      x-capability: email_otp
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Setup code sent
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ObjectDataResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+
+  /auth/2fa/setup/email/confirm:
+    post:
+      tags: [Authentication]
+      summary: Confirm email OTP setup
+      operationId: confirmEmailOtpSetup
+      x-capability: email_otp
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/EmailOtpSetupConfirmInput'}
+      responses:
+        '200':
+          description: Email OTP enabled
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ObjectDataResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+
+  /auth/2fa/recovery-codes:
+    get:
+      tags: [Authentication]
+      summary: Regenerate recovery codes
+      operationId: regenerateRecoveryCodes
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: New recovery codes
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ObjectDataResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+
+  /auth/2fa/setup/passkey/options:
+    post:
+      tags: [Authentication]
+      summary: Get passkey registration options
+      operationId: getPasskeyRegistrationOptions
+      x-capability: passkeys
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: WebAuthn registration options
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ObjectDataResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+
+  /auth/2fa/setup/passkey/register:
+    post:
+      tags: [Authentication]
+      summary: Register a passkey
+      operationId: registerPasskey
+      x-capability: passkeys
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PasskeyRegistrationInput'}
+      responses:
+        '200':
+          description: Passkey registered
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ObjectDataResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+
+  /auth/2fa/setup/passkeys:
+    get:
+      tags: [Authentication]
+      summary: List registered passkeys
+      operationId: listPasskeys
+      x-capability: passkeys
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Registered passkeys
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ListDataResponse'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+
+  /auth/2fa/setup/passkey/{passkey_id}:
+    delete:
+      tags: [Authentication]
+      summary: Delete a registered passkey
+      operationId: deletePasskey
+      x-capability: passkeys
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PasskeyId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SecurityConfirmationInput'}
+      responses:
+        '200':
+          description: Passkey deleted
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ActionResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /auth/2fa/disable:
+    post:
+      tags: [Authentication]
+      summary: Disable two-factor authentication
+      operationId: disableTwoFactor
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SecurityConfirmationInput'}
+      responses:
+        '200':
+          description: Two-factor authentication disabled
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ActionResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+
+  /auth/2fa/disable/send-code:
+    post:
+      tags: [Authentication]
+      summary: Send a two-factor disable confirmation code
+      operationId: sendTwoFactorDisableCode
+      x-capability: email_otp
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Confirmation code sent
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ActionResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+
+  /auth/2fa/challenge:
+    post:
+      tags: [Authentication]
+      summary: Request a two-factor challenge
+      operationId: requestTwoFactorChallenge
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/TwoFactorChallengeInput'}
+      responses:
+        '200':
+          description: Challenge created or sent
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ObjectDataResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+
+  /auth/2fa/verify/passkey/options:
+    post:
+      tags: [Authentication]
+      summary: Get passkey authentication options
+      operationId: getPasskeyAuthenticationOptions
+      x-capability: passkeys
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SessionTokenInput'}
+      responses:
+        '200':
+          description: WebAuthn authentication options
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ObjectDataResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+
+  /auth/2fa/verify:
+    post:
+      tags: [Authentication]
+      summary: Verify a two-factor challenge and issue tokens
+      operationId: verifyTwoFactorChallenge
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/TwoFactorVerifyInput'}
+      responses:
+        '200':
+          description: Challenge verified and tokens issued
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/LoginResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+
+  /billing/config:
+    get:
+      tags: [Billing]
+      summary: Get public SaaS billing configuration
+      operationId: getBillingConfig
+      x-capability: billing
+      security: []
+      responses:
+        '200':
+          description: Billing availability, plans, and public pricing
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ObjectDataResponse'}
+
+  /billing/usage:
+    get:
+      tags: [Billing]
+      summary: Get current account usage and limits
+      operationId: getBillingUsage
+      x-capability: billing
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Usage and tier limits
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ObjectDataResponse'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+
+  /billing/create-checkout:
+    post:
+      tags: [Billing]
+      summary: Create a Stripe checkout session
+      operationId: createBillingCheckout
+      x-capability: billing
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PlanChangeInput'}
+      responses:
+        '200':
+          description: Checkout URL and session identifier
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ObjectDataResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
+  /billing/portal:
+    post:
+      tags: [Billing]
+      summary: Create a Stripe customer portal session
+      operationId: createBillingPortal
+      x-capability: billing
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Customer portal URL
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ObjectDataResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+
+  /billing/change-plan:
+    post:
+      tags: [Billing]
+      summary: Change the current subscription plan
+      operationId: changeBillingPlan
+      x-capability: billing
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PlanChangeInput'}
+      responses:
+        '200':
+          description: Updated subscription state
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ObjectDataResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
+  /billing/status:
+    get:
+      tags: [Billing]
+      summary: Get current subscription and trial status
+      operationId: getBillingStatus
+      x-capability: billing
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Subscription status
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ObjectDataResponse'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+
+  /webhooks/stripe:
+    post:
+      tags: [Billing]
+      summary: Receive Stripe subscription webhooks
+      operationId: handleStripeWebhook
+      x-capability: billing
+      security: []
+      parameters:
+        - name: Stripe-Signature
+          in: header
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '200':
+          description: Webhook accepted
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/StripeWebhookResponse'}
+        '400':
+          description: Missing or invalid Stripe signature
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [error]
+                properties:
+                  error: {type: string}
+
+  /settlements:
+    get:
+      tags: [Settlements]
+      summary: Get shared-bill settlement balances
+      operationId: listSettlements
+      x-capability: settlements
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/XDatabase'
+      responses:
+        '200':
+          description: Settlement summary, open balances, settled items, and counterparties
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SettlementResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
+  /shared-bills:
+    get:
+      tags: [Bill Shares]
+      summary: List accepted bills shared with the current user
+      operationId: listSharedBills
+      x-capability: sharing
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Accepted shared bills
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ListDataResponse'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+
+  /users/search:
+    get:
+      tags: [Bill Shares]
+      summary: Search users eligible to receive a bill share
+      operationId: searchShareRecipients
+      x-capability: sharing
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: q
+          in: query
+          required: false
+          schema: {type: string}
+      responses:
+        '200':
+          description: Matching users, limited to ten results
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ListDataResponse'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+
+  /categories:
+    get:
+      tags: [Bills]
+      summary: List distinct categories in accessible bill groups
+      operationId: listCategories
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/XDatabase'
+      responses:
+        '200':
+          description: Category names
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/StringListResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
+  /budgets:
+    get:
+      tags: [Budgets]
+      summary: List category budgets
+      operationId: listCategoryBudgets
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/XDatabase'
+      responses:
+        '200':
+          description: Category budgets
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CategoryBudgetListResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+    post:
+      tags: [Budgets]
+      summary: Create a category budget
+      operationId: createCategoryBudget
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/XDatabase'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CategoryBudgetCreateInput'}
+      responses:
+        '201':
+          description: Category budget created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CategoryBudgetResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /budgets/{budget_id}:
+    put:
+      tags: [Budgets]
+      summary: Update a category budget
+      operationId: updateCategoryBudget
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/XDatabase'
+        - $ref: '#/components/parameters/BudgetId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CategoryBudgetUpdateInput'}
+      responses:
+        '200':
+          description: Category budget updated
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CategoryBudgetResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+    delete:
+      tags: [Budgets]
+      summary: Delete a category budget
+      operationId: deleteCategoryBudget
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/XDatabase'
+        - $ref: '#/components/parameters/BudgetId'
+      responses:
+        '200':
+          description: Category budget deleted
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ActionResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /budgets/summary:
+    get:
+      tags: [Budgets]
+      summary: Get monthly spending against category budgets
+      operationId: getCategoryBudgetSummary
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/XDatabase'
+        - name: month
+          in: query
+          schema: {type: string, pattern: '^\d{4}-\d{2}$'}
+      responses:
+        '200':
+          description: Budget utilization for the selected month
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ListDataResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
+  /stats/by-category:
+    get:
+      tags: [Statistics]
+      summary: Get payment totals grouped by category
+      operationId: getStatisticsByCategory
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/XDatabase'
+      responses:
+        '200':
+          description: Category totals
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ListDataResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
+  /forecast/cash-flow:
+    get:
+      tags: [Statistics]
+      summary: Forecast cash flow over a future window
+      operationId: getCashFlowForecast
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/XDatabase'
+        - name: days
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 365, default: 60}
+        - name: starting_balance
+          in: query
+          schema: {type: number, default: 0}
+      responses:
+        '200':
+          description: Forecast summary, daily balances, and occurrences
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ObjectDataResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
+  /stats/by-account:
+    get:
+      tags: [Statistics]
+      summary: Get payment totals grouped by account
+      operationId: getStatisticsByAccount
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/XDatabase'
+      responses:
+        '200':
+          description: Account totals
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ListDataResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
+  /stats/yearly:
+    get:
+      tags: [Statistics]
+      summary: Get yearly payment totals
+      operationId: getYearlyStatistics
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/XDatabase'
+      responses:
+        '200':
+          description: Year-indexed expense and deposit totals
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ObjectDataResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
+  /stats/monthly-comparison:
+    get:
+      tags: [Statistics]
+      summary: Compare monthly totals for the current and previous year
+      operationId: getMonthlyStatisticsComparison
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/XDatabase'
+      responses:
+        '200':
+          description: Current-year and previous-year monthly comparison
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ObjectDataResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
+  /users:
+    get:
+      tags: [Administration]
+      summary: List users visible to the current administrator
+      operationId: listAdminUsers
+      x-capability: administration
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Users in the deployment or SaaS account
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ListDataResponse'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+    post:
+      tags: [Administration]
+      summary: Create a user
+      operationId: createAdminUser
+      x-capability: administration
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AdminUserCreateInput'}
+      responses:
+        '201':
+          description: User created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ObjectDataResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
+  /users/{target_user_id}:
+    put:
+      tags: [Administration]
+      summary: Update a user
+      operationId: updateAdminUser
+      x-capability: administration
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AdminUserUpdateInput'}
+      responses:
+        '200':
+          description: User updated
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ObjectDataResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    delete:
+      tags: [Administration]
+      summary: Delete a user
+      operationId: deleteAdminUser
+      x-capability: administration
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      responses:
+        '200':
+          description: User deleted
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ActionResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /users/{target_user_id}/databases:
+    get:
+      tags: [Administration]
+      summary: List bill groups accessible to a user
+      operationId: listAdminUserDatabases
+      x-capability: administration
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      responses:
+        '200':
+          description: Accessible bill groups
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DatabaseListResponse'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /invitations:
+    get:
+      tags: [Administration]
+      summary: List pending team invitations
+      operationId: listAdminInvitations
+      x-capability: administration
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Pending invitations created by the current administrator
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ListDataResponse'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+    post:
+      tags: [Administration]
+      summary: Invite a user to the account
+      operationId: createAdminInvitation
+      x-capability: administration
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AdminInvitationInput'}
+      responses:
+        '201':
+          description: Invitation created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ActionResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
+  /invitations/{invite_id}:
+    delete:
+      tags: [Administration]
+      summary: Cancel a pending invitation
+      operationId: cancelAdminInvitation
+      x-capability: administration
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/InvitationId'
+      responses:
+        '200':
+          description: Invitation cancelled
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ActionResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /invitations/{invite_id}/resend:
+    post:
+      tags: [Administration]
+      summary: Resend a pending invitation
+      operationId: resendAdminInvitation
+      x-capability: administration
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/InvitationId'
+      responses:
+        '200':
+          description: Invitation delivery attempted
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ActionResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /databases:
+    get:
+      tags: [Administration]
+      summary: List managed bill groups and their access members
+      operationId: listAdminDatabases
+      x-capability: administration
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Managed bill groups
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ListDataResponse'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+    post:
+      tags: [Administration]
+      summary: Create a bill group
+      operationId: createAdminDatabase
+      x-capability: administration
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AdminDatabaseCreateInput'}
+      responses:
+        '201':
+          description: Bill group created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ObjectDataResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
+  /databases/{database_id}:
+    put:
+      tags: [Administration]
+      summary: Update a bill group
+      operationId: updateAdminDatabase
+      x-capability: administration
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/DatabaseId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AdminDatabaseUpdateInput'}
+      responses:
+        '200':
+          description: Bill group updated
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ObjectDataResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    delete:
+      tags: [Administration]
+      summary: Delete a bill group
+      operationId: deleteAdminDatabase
+      x-capability: administration
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/DatabaseId'
+      responses:
+        '200':
+          description: Bill group deleted
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ActionResponse'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /databases/{database_id}/access:
+    get:
+      tags: [Administration]
+      summary: List users with access to a bill group
+      operationId: listAdminDatabaseAccess
+      x-capability: administration
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/DatabaseId'
+      responses:
+        '200':
+          description: Users with access
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ListDataResponse'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    post:
+      tags: [Administration]
+      summary: Grant a user access to a bill group
+      operationId: grantAdminDatabaseAccess
+      x-capability: administration
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/DatabaseId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id]
+              properties:
+                user_id: {type: integer}
+      responses:
+        '200':
+          description: Access granted
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ActionResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /databases/{database_id}/access/{target_user_id}:
+    delete:
+      tags: [Administration]
+      summary: Revoke a user's access to a bill group
+      operationId: revokeAdminDatabaseAccess
+      x-capability: administration
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/DatabaseId'
+        - $ref: '#/components/parameters/UserId'
+      responses:
+        '200':
+          description: Access revoked
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ActionResponse'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /alerts/upcoming:
+    get:
+      tags: [Notifications]
+      summary: List reminder-aware upcoming bill alerts
+      operationId: listUpcomingAlerts
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/XDatabase'
+        - name: horizon_days
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 90, default: 30}
+      responses:
+        '200':
+          description: Upcoming, due, and overdue alerts
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ListDataResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+
+  /notifications/config:
+    get:
+      tags: [Notifications]
+      summary: Get legacy remote-push configuration
+      operationId: getNotificationConfig
+      x-legacy-capability: remote_notifications
+      description: The native rewrite uses local reminders and does not register a push token.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Push availability and supported notification types
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ObjectDataResponse'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+
+  /notifications/test:
+    post:
+      tags: [Notifications]
+      summary: Send a legacy remote-push test notification
+      operationId: sendTestNotification
+      x-legacy-capability: remote_notifications
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title: {type: string}
+                body: {type: string}
+      responses:
+        '200':
+          description: Test delivery attempted
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ObjectDataResponse'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '503': {$ref: '#/components/responses/ServerError'}
+
+  /notifications/reminders:
+    post:
+      tags: [Notifications]
+      summary: Trigger legacy server-side reminder delivery
+      operationId: triggerNotificationReminders
+      x-legacy-capability: remote_notifications
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                days_ahead:
+                  type: array
+                  items: {type: integer, minimum: 0}
+      responses:
+        '200':
+          description: Reminder processing statistics
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ObjectDataResponse'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '503': {$ref: '#/components/responses/ServerError'}
+
+  /shares/cleanup-expired:
+    post:
+      tags: [Bill Shares]
+      summary: Delete expired pending bill-share invitations
+      operationId: cleanupExpiredShares
+      x-capability: administration
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Cleanup statistics
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ObjectDataResponse'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+        '500': {$ref: '#/components/responses/ServerError'}
+
+  /openapi.yaml:
+    get:
+      tags: [Utilities]
+      summary: Download this OpenAPI document
+      operationId: getOpenApiDocument
+      security: []
+      responses:
+        '200':
+          description: OpenAPI YAML document
+          content:
+            text/yaml:
+              schema: {type: string}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /docs:
+    get:
+      tags: [Utilities]
+      summary: Open interactive API documentation
+      operationId: getApiDocumentation
+      security: []
+      responses:
+        '200':
+          description: Swagger UI document
+          content:
+            text/html:
+              schema: {type: string}
+
+  /devices:
+    get:
+      tags: [Devices]
+      summary: List legacy remote-push device registrations
+      operationId: listDevices
+      x-legacy-capability: remote_notifications
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Registered devices
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ListDataResponse'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+    post:
+      tags: [Devices]
+      summary: Register or update a legacy remote-push device
+      operationId: registerDevice
+      x-legacy-capability: remote_notifications
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/DeviceRegistrationInput'}
+      responses:
+        '200':
+          description: Existing device updated
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ActionResponse'}
+        '201':
+          description: Device registered
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ActionResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+
+  /devices/{device_id}:
+    delete:
+      tags: [Devices]
+      summary: Unregister a legacy remote-push device
+      operationId: unregisterDevice
+      x-legacy-capability: remote_notifications
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/DeviceId'
+      responses:
+        '200':
+          description: Device unregistered
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ActionResponse'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /devices/{device_id}/push-token:
+    put:
+      tags: [Devices]
+      summary: Replace a legacy remote-push token
+      operationId: updateDevicePushToken
+      x-legacy-capability: remote_notifications
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/DeviceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PushTokenInput'}
+      responses:
+        '200':
+          description: Push token updated
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ActionResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /sync/push:
+    post:
+      tags: [Sync]
+      summary: Push an ordered batch of offline bill and payment changes
+      operationId: pushSyncChanges
+      x-capability: idempotent_mutations
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/XDatabase'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SyncPushInput'}
+      responses:
+        '200':
+          description: Accepted and rejected batch entries
+          headers:
+            Idempotency-Replayed:
+              $ref: '#/components/headers/IdempotencyReplayed'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SyncPushResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /sync:
+    get:
+      tags: [Sync]
+      summary: Get bill and payment changes since a sync cursor
+      operationId: getSyncChanges
+      x-capability: delta_sync
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/XDatabase'
+        - name: since
+          in: query
+          required: true
+          schema: {type: string, format: date-time}
+        - name: include_archived
+          in: query
+          schema: {type: boolean, default: false}
+      responses:
+        '200':
+          description: Changed bills and payments plus next server cursor
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SyncPullResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /sync/full:
+    get:
+      tags: [Sync]
+      summary: Get a complete bill and payment snapshot
+      operationId: getFullSyncSnapshot
+      x-capability: delta_sync
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/XDatabase'
+        - name: include_archived
+          in: query
+          schema: {type: boolean, default: false}
+      responses:
+        '200':
+          description: Complete bills and payments for the selected bill group
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SyncPullResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /telemetry/notice:
+    get:
+      tags: [Telemetry]
+      summary: Get instance-wide telemetry notice and consent state
+      operationId: getTelemetryNotice
+      x-capability: telemetry
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Telemetry notice state
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ObjectDataResponse'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /telemetry/accept:
+    post:
+      tags: [Telemetry]
+      summary: Enable instance-wide telemetry and dismiss the notice
+      operationId: acceptTelemetry
+      x-capability: telemetry
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Telemetry accepted
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ActionResponse'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /telemetry/opt-out:
+    post:
+      tags: [Telemetry]
+      summary: Disable instance-wide telemetry
+      operationId: optOutOfTelemetry
+      x-capability: telemetry
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Telemetry disabled for the instance
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ActionResponse'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /config:
+    get:
+      tags: [Utilities]
+      summary: Get public deployment and mobile capability configuration
+      operationId: getPublicConfig
+      security: []
+      responses:
+        '200':
+          description: Public deployment configuration
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success:
+                    type: boolean
+                    enum: [true]
+                  data:
+                    $ref: '#/components/schemas/PublicConfig'
 
   /version:
     get:
       tags: [Utilities]
       summary: Get API version info
+      operationId: getVersion
+      security: []
       responses:
         '200':
           description: Version information
@@ -1069,6 +2960,8 @@ paths:
                         type: array
                         items:
                           type: string
+                      mobile:
+                        $ref: '#/components/schemas/MobileCapabilities'
 
 components:
   securitySchemes:
@@ -1076,13 +2969,27 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: session
+      description: Browser session accepted by endpoints using the shared auth decorator
+
+  headers:
+    IdempotencyReplayed:
+      description: Present and true only when a stored mutation response was replayed
+      schema:
+        type: boolean
 
   parameters:
     XDatabase:
       name: X-Database
       in: header
       required: true
-      description: Database/workspace name to operate on
+      description: |
+        Database/workspace name to operate on. Use `_all_` only on endpoints
+        that explicitly support cross-workspace access. Mutation idempotency is
+        isolated by authenticated user and the affected database.
       schema:
         type: string
         example: personal
@@ -1092,16 +2999,436 @@ components:
       required: true
       schema:
         type: integer
+    ShareId:
+      name: share_id
+      in: path
+      required: true
+      schema: {type: integer}
+    BudgetId:
+      name: budget_id
+      in: path
+      required: true
+      schema: {type: integer}
+    UserId:
+      name: target_user_id
+      in: path
+      required: true
+      schema: {type: integer}
+    InvitationId:
+      name: invite_id
+      in: path
+      required: true
+      schema: {type: integer}
+    DatabaseId:
+      name: database_id
+      in: path
+      required: true
+      schema: {type: integer}
+    DeviceId:
+      name: device_id
+      in: path
+      required: true
+      schema: {type: integer}
+    OAuthProvider:
+      name: provider
+      in: path
+      required: true
+      schema: {type: string}
+    PasskeyId:
+      name: passkey_id
+      in: path
+      required: true
+      schema: {type: integer}
+
+  responses:
+    BadRequest:
+      description: Invalid request or required workspace header missing
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Unauthorized:
+      description: Missing, invalid, or expired access token
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Forbidden:
+      description: Authenticated user cannot access the requested resource
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: Requested resource was not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Conflict:
+      description: Resource changed or the mutation UUID was reused
+      content:
+        application/json:
+          schema:
+            oneOf:
+              - $ref: '#/components/schemas/ConflictResponse'
+              - $ref: '#/components/schemas/ErrorResponse'
+    RateLimited:
+      description: Request rate limit exceeded
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    ServerError:
+      description: Server could not complete the request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
 
   schemas:
     ErrorResponse:
       type: object
+      required: [success, error]
       properties:
         success:
           type: boolean
-          example: false
+          enum: [false]
         error:
           type: string
+        code:
+          type: string
+          nullable: true
+          description: Stable machine-readable code on new contract-aware errors
+        details:
+          type: object
+          nullable: true
+          additionalProperties: true
+
+    ConflictResponse:
+      type: object
+      required: [success, error, code, conflict]
+      properties:
+        success:
+          type: boolean
+          enum: [false]
+        error:
+          type: string
+        code:
+          type: string
+          enum: [resource_conflict]
+        conflict:
+          $ref: '#/components/schemas/ResourceConflict'
+
+    ResourceConflict:
+      type: object
+      required: [entity, entity_id, reason, server_updated_at, server]
+      properties:
+        entity:
+          type: string
+          enum: [bill, payment, share]
+        entity_id:
+          type: integer
+        reason:
+          type: string
+          enum: [modified]
+        base_updated_at:
+          type: string
+          format: date-time
+        server_updated_at:
+          type: string
+          format: date-time
+        server:
+          type: object
+          additionalProperties: true
+
+    MutationControl:
+      type: object
+      properties:
+        client_mutation_id:
+          type: string
+          format: uuid
+          description: |
+            Optional idempotency UUID. Repeating the same user/database/request
+            returns the original status and body with `Idempotency-Replayed: true`.
+            A bill move remains scoped to the source database selected by the
+            original request, so a retry is replayable after the bill moves.
+        base_updated_at:
+          type: string
+          format: date-time
+          description: >-
+            Last server timestamp read by the client, encoded as RFC3339 with a
+            UTC offset. Legacy clients may omit this field; when present it
+            cannot be null, empty, or offset-free.
+
+    ObjectDataResponse:
+      type: object
+      required: [success]
+      additionalProperties: true
+      properties:
+        success: {type: boolean, enum: [true]}
+        data:
+          type: object
+          additionalProperties: true
+        message: {type: string}
+
+    ListDataResponse:
+      type: object
+      required: [success, data]
+      properties:
+        success: {type: boolean, enum: [true]}
+        data:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+
+    StringListResponse:
+      type: object
+      required: [success, data]
+      properties:
+        success: {type: boolean, enum: [true]}
+        data:
+          type: array
+          items: {type: string}
+
+    ActionResponse:
+      type: object
+      required: [success]
+      additionalProperties: true
+      properties:
+        success: {type: boolean, enum: [true]}
+        message: {type: string}
+        data:
+          type: object
+          additionalProperties: true
+          properties:
+            message: {type: string}
+            id: {type: integer}
+            updated_at: {type: string, format: date-time}
+
+    StripeWebhookResponse:
+      type: object
+      required: [received]
+      properties:
+        received: {type: boolean, enum: [true]}
+
+    RegistrationInput:
+      type: object
+      required: [username, email, password]
+      properties:
+        username: {type: string}
+        email: {type: string, format: email}
+        password: {type: string, format: password, minLength: 8}
+        invitation_token: {type: string}
+
+    InvitationAcceptanceInput:
+      type: object
+      required: [token, username, password]
+      properties:
+        token: {type: string}
+        username: {type: string}
+        password: {type: string, format: password, minLength: 8}
+
+    EmailInput:
+      type: object
+      required: [email]
+      properties:
+        email: {type: string, format: email}
+
+    TokenInput:
+      type: object
+      required: [token]
+      properties:
+        token: {type: string}
+
+    ResetPasswordInput:
+      allOf:
+        - $ref: '#/components/schemas/TokenInput'
+        - type: object
+          required: [password]
+          properties:
+            password: {type: string, format: password, minLength: 8}
+
+    AccountDeleteInput:
+      type: object
+      required: [password, confirmation]
+      properties:
+        password: {type: string, format: password}
+        confirmation: {type: string, enum: [DELETE]}
+
+    OAuthCallbackInput:
+      type: object
+      required: [code, state]
+      properties:
+        code: {type: string}
+        state: {type: string}
+        redirect_uri: {type: string, format: uri}
+
+    EmailOtpSetupConfirmInput:
+      type: object
+      required: [code]
+      properties:
+        code: {type: string}
+
+    PasskeyRegistrationInput:
+      type: object
+      required: [credential]
+      properties:
+        credential:
+          type: object
+          additionalProperties: true
+        name: {type: string}
+
+    SecurityConfirmationInput:
+      type: object
+      properties:
+        password: {type: string, format: password}
+        code: {type: string}
+
+    SessionTokenInput:
+      type: object
+      required: [session_token]
+      properties:
+        session_token: {type: string}
+
+    TwoFactorChallengeInput:
+      allOf:
+        - $ref: '#/components/schemas/SessionTokenInput'
+        - type: object
+          properties:
+            method: {type: string, enum: [email, passkey, recovery_code]}
+
+    TwoFactorVerifyInput:
+      allOf:
+        - $ref: '#/components/schemas/SessionTokenInput'
+        - type: object
+          properties:
+            code: {type: string}
+            recovery_code: {type: string}
+            credential:
+              type: object
+              additionalProperties: true
+
+    PlanChangeInput:
+      type: object
+      required: [plan]
+      properties:
+        plan: {type: string}
+        billing_period: {type: string, enum: [monthly, yearly]}
+
+    MobileCapabilities:
+      type: object
+      required:
+        - mobile_contract_version
+        - server_version
+        - minimum_mobile_version
+        - deployment_mode
+        - default_currency
+        - default_locale
+        - oauth_providers
+        - features
+      properties:
+        mobile_contract_version:
+          type: integer
+          minimum: 1
+        server_version:
+          type: string
+        minimum_mobile_version:
+          type: string
+          nullable: true
+        deployment_mode:
+          type: string
+          enum: [saas, self-hosted]
+        default_currency:
+          type: string
+          minLength: 3
+          maxLength: 3
+        default_locale:
+          type: string
+        oauth_providers:
+          type: array
+          items:
+            type: string
+            enum: [google, apple, microsoft, oidc]
+        features:
+          type: object
+          required:
+            - registration
+            - email
+            - email_verification
+            - oauth
+            - email_otp
+            - passkeys
+            - billing
+            - administration
+            - sharing
+            - settlements
+            - telemetry
+            - delta_sync
+            - idempotent_mutations
+            - optimistic_concurrency
+          properties:
+            registration: {type: boolean}
+            email: {type: boolean}
+            email_verification: {type: boolean}
+            oauth: {type: boolean}
+            email_otp: {type: boolean}
+            passkeys: {type: boolean}
+            billing: {type: boolean}
+            administration: {type: boolean}
+            sharing: {type: boolean}
+            settlements: {type: boolean}
+            telemetry: {type: boolean}
+            delta_sync: {type: boolean}
+            idempotent_mutations: {type: boolean}
+            optimistic_concurrency: {type: boolean}
+
+    PublicConfig:
+      type: object
+      required:
+        - deployment_mode
+        - billing_enabled
+        - registration_enabled
+        - email_enabled
+        - email_verification_required
+        - oauth_providers
+        - twofa_enabled
+        - passkeys_enabled
+        - default_currency
+        - default_locale
+        - mobile
+      properties:
+        deployment_mode:
+          type: string
+          enum: [saas, self-hosted]
+        billing_enabled: {type: boolean}
+        registration_enabled: {type: boolean}
+        email_enabled: {type: boolean}
+        email_verification_required: {type: boolean}
+        oauth_providers:
+          type: array
+          items:
+            type: object
+            required: [id, display_name, icon]
+            properties:
+              id: {type: string}
+              display_name: {type: string}
+              icon: {type: string}
+        twofa_enabled: {type: boolean}
+        passkeys_enabled: {type: boolean}
+        default_currency: {type: string}
+        default_locale: {type: string}
+        mobile:
+          $ref: '#/components/schemas/MobileCapabilities'
+        tier_limits:
+          type: object
+          nullable: true
+          additionalProperties: true
+        pricing:
+          type: object
+          nullable: true
+          additionalProperties: true
 
     SuccessResponse:
       type: object
@@ -1114,6 +3441,14 @@ components:
           properties:
             message:
               type: string
+            id:
+              type: integer
+            last_updated:
+              type: string
+              format: date-time
+            updated_at:
+              type: string
+              format: date-time
 
     LoginResponse:
       type: object
@@ -1198,6 +3533,21 @@ components:
         notes:
           type: string
           nullable: true
+        category:
+          type: string
+          nullable: true
+        reminder_enabled:
+          type: boolean
+        reminder_days:
+          type: array
+          items:
+            type: integer
+            minimum: 0
+        database_id:
+          type: integer
+        last_updated:
+          type: string
+          format: date-time
         archived:
           type: boolean
         is_shared:
@@ -1227,43 +3577,107 @@ components:
               nullable: true
               description: When recipient marked their portion as paid
 
-    BillInput:
-      type: object
-      required: [name, next_due]
-      properties:
-        name:
-          type: string
-        amount:
-          type: number
-        varies:
-          type: boolean
-          default: false
-        frequency:
-          type: string
-          default: monthly
-        frequency_type:
-          type: string
-          default: simple
-        frequency_config:
-          type: string
-          default: "{}"
-        next_due:
-          type: string
-          format: date
-        auto_payment:
-          type: boolean
-          default: false
-        icon:
-          type: string
-          default: payment
-        type:
-          type: string
-          enum: [expense, deposit]
-          default: expense
-        account:
-          type: string
-        notes:
-          type: string
+    BillMutationFields:
+      allOf:
+        - $ref: '#/components/schemas/MutationControl'
+        - type: object
+          properties:
+            database_id:
+              type: integer
+              description: Explicit destination workspace, required for create in `_all_`
+            name:
+              type: string
+            amount:
+              type: number
+              nullable: true
+            varies:
+              type: boolean
+              default: false
+            frequency:
+              type: string
+              enum: [weekly, bi-weekly, biweekly, monthly, quarterly, yearly, custom]
+              default: monthly
+            frequency_type:
+              type: string
+              enum: [simple, specific_dates, multiple_weekly]
+              default: simple
+            frequency_config:
+              type: string
+              default: "{}"
+            next_due:
+              type: string
+              format: date
+            auto_payment:
+              type: boolean
+              default: false
+            icon:
+              type: string
+              default: payment
+            type:
+              type: string
+              enum: [expense, deposit]
+              default: expense
+            account:
+              type: string
+              nullable: true
+            category:
+              type: string
+              nullable: true
+            notes:
+              type: string
+              nullable: true
+            reminder_enabled:
+              type: boolean
+              default: true
+            reminder_days:
+              type: array
+              items:
+                type: integer
+                minimum: 0
+
+    BillCreateInput:
+      allOf:
+        - $ref: '#/components/schemas/BillMutationFields'
+        - type: object
+          required: [name, next_due]
+
+    BillUpdateInput:
+      allOf:
+        - $ref: '#/components/schemas/BillMutationFields'
+
+    PaymentCreateInput:
+      allOf:
+        - $ref: '#/components/schemas/MutationControl'
+        - type: object
+          properties:
+            amount:
+              type: number
+              description: Payment amount (defaults to bill amount)
+            payment_date:
+              type: string
+              format: date
+              description: Payment date (defaults to today)
+            notes:
+              type: string
+              nullable: true
+            advance_due:
+              type: boolean
+              default: true
+              description: Advance due date to next occurrence
+
+    PaymentUpdateInput:
+      allOf:
+        - $ref: '#/components/schemas/MutationControl'
+        - type: object
+          properties:
+            amount:
+              type: number
+            payment_date:
+              type: string
+              format: date
+            notes:
+              type: string
+              nullable: true
 
     Payment:
       type: object
@@ -1278,6 +3692,9 @@ components:
         notes:
           type: string
           nullable: true
+        updated_at:
+          type: string
+          format: date-time
 
     PaymentWithBill:
       allOf:
@@ -1341,6 +3758,10 @@ components:
           type: string
           format: date-time
           nullable: true
+        updated_at:
+          type: string
+          format: date-time
+          nullable: true
         recipient_paid_date:
           type: string
           format: date-time
@@ -1363,3 +3784,399 @@ components:
               type: number
               nullable: true
               description: Calculated amount the recipient owes
+
+    BillShareCreateInput:
+      allOf:
+        - $ref: '#/components/schemas/MutationControl'
+        - type: object
+          required: [shared_with]
+          properties:
+            shared_with:
+              type: string
+              description: Recipient username or email address
+            split_type:
+              type: string
+              enum: [percentage, fixed, equal]
+              nullable: true
+            split_value:
+              type: number
+              nullable: true
+
+    BillShareUpdateInput:
+      allOf:
+        - $ref: '#/components/schemas/MutationControl'
+        - type: object
+          properties:
+            split_type:
+              type: string
+              enum: [percentage, fixed, equal]
+              nullable: true
+            split_value:
+              type: number
+              nullable: true
+
+    ShareTokenMutationInput:
+      allOf:
+        - $ref: '#/components/schemas/MutationControl'
+        - type: object
+          required: [token]
+          properties:
+            token: {type: string}
+
+    BillShareResponse:
+      type: object
+      required: [success, data]
+      properties:
+        success: {type: boolean, enum: [true]}
+        data:
+          allOf:
+            - $ref: '#/components/schemas/BillShare'
+            - type: object
+              required: [id, message]
+              properties:
+                message: {type: string}
+
+    SettlementResponse:
+      type: object
+      required: [success, data]
+      properties:
+        success: {type: boolean, enum: [true]}
+        data:
+          type: object
+          required: [summary, owed_to_me, i_owe, settled, people]
+          properties:
+            summary:
+              type: object
+              required: [owed_to_me, i_owe, net_balance, open_count, settled_count]
+              properties:
+                owed_to_me: {type: number}
+                i_owe: {type: number}
+                net_balance: {type: number}
+                open_count: {type: integer}
+                settled_count: {type: integer}
+                overdue_owed_to_me: {type: integer}
+                overdue_i_owe: {type: integer}
+            owed_to_me:
+              type: array
+              items: {$ref: '#/components/schemas/SettlementItem'}
+            i_owe:
+              type: array
+              items: {$ref: '#/components/schemas/SettlementItem'}
+            settled:
+              type: array
+              maxItems: 25
+              items: {$ref: '#/components/schemas/SettlementItem'}
+            people:
+              type: array
+              items:
+                type: object
+                properties:
+                  counterparty_name: {type: string}
+                  owed_to_me: {type: number}
+                  i_owe: {type: number}
+                  net: {type: number}
+                  open_count: {type: integer}
+
+    SettlementItem:
+      type: object
+      required: [share_id, direction, bill_id, bill_name, amount, paid]
+      properties:
+        share_id: {type: integer}
+        direction: {type: string, enum: [owed_to_me, i_owe]}
+        bill_id: {type: integer}
+        bill_name: {type: string}
+        bill_icon: {type: string}
+        bill_type: {type: string}
+        database_id: {type: integer}
+        database_name: {type: string}
+        counterparty_user_id: {type: integer, nullable: true}
+        counterparty_name: {type: string, nullable: true}
+        counterparty_identifier: {type: string, nullable: true}
+        amount: {type: number}
+        total_amount: {type: number, nullable: true}
+        due_date: {type: string, format: date}
+        days_until_due: {type: integer, nullable: true}
+        due_status: {type: string, enum: [overdue, due_today, upcoming, unknown]}
+        split_type: {type: string, nullable: true}
+        split_value: {type: number, nullable: true}
+        paid: {type: boolean}
+        paid_date: {type: string, format: date-time, nullable: true}
+        created_at: {type: string, format: date-time, nullable: true}
+        accepted_at: {type: string, format: date-time, nullable: true}
+        share_updated_at: {type: string, format: date-time, nullable: true}
+
+    CategoryBudget:
+      type: object
+      required: [id, database_id, database_name, category, monthly_limit]
+      properties:
+        id: {type: integer}
+        database_id: {type: integer}
+        database_name: {type: string}
+        category: {type: string}
+        monthly_limit: {type: number, minimum: 0}
+        created_at: {type: string, format: date-time, nullable: true}
+        updated_at: {type: string, format: date-time, nullable: true}
+
+    CategoryBudgetCreateInput:
+      type: object
+      required: [category, monthly_limit]
+      properties:
+        database_id: {type: integer}
+        category: {type: string}
+        monthly_limit: {type: number, minimum: 0}
+
+    CategoryBudgetUpdateInput:
+      type: object
+      properties:
+        database_id: {type: integer}
+        category: {type: string}
+        monthly_limit: {type: number, minimum: 0}
+
+    CategoryBudgetResponse:
+      type: object
+      required: [success, data]
+      properties:
+        success: {type: boolean, enum: [true]}
+        data: {$ref: '#/components/schemas/CategoryBudget'}
+
+    CategoryBudgetListResponse:
+      type: object
+      required: [success, data]
+      properties:
+        success: {type: boolean, enum: [true]}
+        data:
+          type: array
+          items: {$ref: '#/components/schemas/CategoryBudget'}
+
+    AdminUserCreateInput:
+      type: object
+      required: [username, password]
+      properties:
+        username: {type: string}
+        password: {type: string, format: password, minLength: 8}
+        email: {type: string, format: email, nullable: true}
+        role: {type: string, enum: [admin, user], default: user}
+        database_ids:
+          type: array
+          items: {type: integer}
+
+    AdminUserUpdateInput:
+      type: object
+      properties:
+        email: {type: string, format: email, nullable: true}
+        role: {type: string, enum: [admin, user]}
+
+    AdminInvitationInput:
+      type: object
+      required: [email]
+      properties:
+        email: {type: string, format: email}
+        role: {type: string, enum: [admin, user], default: user}
+        database_ids:
+          type: array
+          items: {type: integer}
+
+    AdminDatabaseCreateInput:
+      type: object
+      required: [name, display_name]
+      properties:
+        name: {type: string}
+        display_name: {type: string}
+        description: {type: string}
+
+    AdminDatabaseUpdateInput:
+      type: object
+      properties:
+        display_name: {type: string}
+        description: {type: string, nullable: true}
+
+    DatabaseListResponse:
+      type: object
+      required: [success, data]
+      properties:
+        success: {type: boolean, enum: [true]}
+        data:
+          type: array
+          items: {$ref: '#/components/schemas/DatabaseInfo'}
+
+    DeviceRegistrationInput:
+      type: object
+      required: [device_id, platform]
+      properties:
+        device_id: {type: string}
+        device_name: {type: string, nullable: true}
+        platform: {type: string, enum: [ios, android, web, desktop]}
+        push_token: {type: string, nullable: true}
+        push_provider: {type: string, nullable: true}
+        app_version: {type: string, nullable: true}
+        os_version: {type: string, nullable: true}
+        notification_settings:
+          type: object
+          additionalProperties: true
+
+    PushTokenInput:
+      type: object
+      properties:
+        push_token: {type: string, nullable: true}
+        push_provider: {type: string, nullable: true}
+
+    SyncBillCreateInput:
+      allOf:
+        - $ref: '#/components/schemas/BillMutationFields'
+        - type: object
+          required: [name, next_due]
+          properties:
+            id:
+              type: integer
+              nullable: true
+              enum: [null]
+            client_ref: {type: string}
+
+    SyncBillUpdateInput:
+      allOf:
+        - $ref: '#/components/schemas/BillMutationFields'
+        - type: object
+          required: [id]
+          anyOf:
+            - required: [base_updated_at]
+            - required: [last_updated]
+          properties:
+            id: {type: integer, minimum: 1}
+            client_ref: {type: string}
+            last_updated:
+              type: string
+              format: date-time
+              deprecated: true
+
+    SyncBillInput:
+      oneOf:
+        - $ref: '#/components/schemas/SyncBillCreateInput'
+        - $ref: '#/components/schemas/SyncBillUpdateInput'
+
+    SyncPaymentCreateInput:
+      allOf:
+        - $ref: '#/components/schemas/PaymentUpdateInput'
+        - type: object
+          required: [bill_id, amount, payment_date]
+          properties:
+            id:
+              type: integer
+              nullable: true
+              enum: [null]
+            client_ref: {type: string}
+            bill_id: {type: integer, minimum: 1}
+
+    SyncPaymentUpdateInput:
+      allOf:
+        - $ref: '#/components/schemas/PaymentUpdateInput'
+        - type: object
+          required: [id]
+          anyOf:
+            - required: [base_updated_at]
+            - required: [updated_at]
+          properties:
+            id: {type: integer, minimum: 1}
+            client_ref: {type: string}
+            updated_at:
+              type: string
+              format: date-time
+              deprecated: true
+
+    SyncPaymentInput:
+      oneOf:
+        - $ref: '#/components/schemas/SyncPaymentCreateInput'
+        - $ref: '#/components/schemas/SyncPaymentUpdateInput'
+
+    SyncDeletedEntity:
+      type: object
+      required: [id, base_updated_at]
+      properties:
+        id: {type: integer, minimum: 1}
+        base_updated_at:
+          type: string
+          format: date-time
+          description: >-
+            Required server timestamp used for destructive conflict detection
+
+    SyncPushInput:
+      type: object
+      properties:
+        client_mutation_id:
+          type: string
+          format: uuid
+        bills:
+          type: array
+          items: {$ref: '#/components/schemas/SyncBillInput'}
+        payments:
+          type: array
+          items: {$ref: '#/components/schemas/SyncPaymentInput'}
+        deleted_bills:
+          type: array
+          items: {$ref: '#/components/schemas/SyncDeletedEntity'}
+        deleted_payments:
+          type: array
+          items: {$ref: '#/components/schemas/SyncDeletedEntity'}
+
+    SyncResultItem:
+      type: object
+      properties:
+        id: {type: integer, nullable: true}
+        action: {type: string}
+        client_ref: {type: string, nullable: true}
+        reason: {type: string}
+        code: {type: string, enum: [resource_conflict]}
+        server_data:
+          type: object
+          additionalProperties: true
+        data:
+          type: object
+          additionalProperties: true
+
+    SyncPushResponse:
+      type: object
+      required: [success, data]
+      properties:
+        success: {type: boolean, enum: [true]}
+        data:
+          type: object
+          required: [accepted_bills, rejected_bills, accepted_payments, rejected_payments, server_time]
+          properties:
+            accepted_bills:
+              type: array
+              items: {$ref: '#/components/schemas/SyncResultItem'}
+            rejected_bills:
+              type: array
+              items: {$ref: '#/components/schemas/SyncResultItem'}
+            accepted_payments:
+              type: array
+              items: {$ref: '#/components/schemas/SyncResultItem'}
+            rejected_payments:
+              type: array
+              items: {$ref: '#/components/schemas/SyncResultItem'}
+            server_time: {type: string, format: date-time}
+
+    SyncPayment:
+      allOf:
+        - $ref: '#/components/schemas/Payment'
+        - type: object
+          properties:
+            bill_id: {type: integer}
+            created_at: {type: string, format: date-time, nullable: true}
+
+    SyncPullResponse:
+      type: object
+      required: [success, data]
+      properties:
+        success: {type: boolean, enum: [true]}
+        data:
+          type: object
+          required: [bills, payments, server_time]
+          properties:
+            bills:
+              type: array
+              items: {$ref: '#/components/schemas/Bill'}
+            payments:
+              type: array
+              items: {$ref: '#/components/schemas/SyncPayment'}
+            server_time: {type: string, format: date-time}
+            has_more: {type: boolean}

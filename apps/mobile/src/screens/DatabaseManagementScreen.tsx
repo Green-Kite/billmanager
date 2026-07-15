@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useFocusEffect } from '@react-navigation/native';
+import { useTranslation } from 'react-i18next';
 import { api } from '../api/client';
 import { useTheme } from '../context/ThemeContext';
 import { useAuth } from '../context/AuthContext';
@@ -21,6 +22,7 @@ import { DatabaseWithAccess, AdminUser } from '../types';
 type Props = NativeStackScreenProps<any, 'DatabaseManagement'>;
 
 export default function DatabaseManagementScreen({ navigation }: Props) {
+  const { t } = useTranslation();
   const { colors } = useTheme();
   const { refreshDatabases } = useAuth();
   const [databases, setDatabases] = useState<DatabaseWithAccess[]>([]);
@@ -48,15 +50,15 @@ export default function DatabaseManagementScreen({ navigation }: Props) {
         setDatabases(response.data);
         setError(null);
       } else {
-        setError(response.error || 'Failed to load bill groups');
+        setError(response.error || t('mobileParity.groupManagement.loadFailed'));
       }
     } catch (err) {
-      setError('Network error');
+      setError(t('mobileParity.common.networkError'));
     } finally {
       setIsLoading(false);
       setIsRefreshing(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     fetchDatabases();
@@ -99,12 +101,12 @@ export default function DatabaseManagementScreen({ navigation }: Props) {
 
   const handleSubmit = async () => {
     if (!displayName.trim()) {
-      Alert.alert('Error', 'Please enter a display name');
+      Alert.alert(t('mobileParity.common.error'), t('mobileParity.groupManagement.displayNameRequired'));
       return;
     }
 
     if (!editingDatabase && !name.trim()) {
-      Alert.alert('Error', 'Please enter an internal name');
+      Alert.alert(t('mobileParity.common.error'), t('mobileParity.groupManagement.internalNameRequired'));
       return;
     }
 
@@ -123,29 +125,32 @@ export default function DatabaseManagementScreen({ navigation }: Props) {
       setShowModal(false);
       fetchDatabases();
       refreshDatabases();
-      Alert.alert('Success', editingDatabase ? 'Bill group updated' : 'Bill group created');
+      Alert.alert(
+        t('mobileParity.common.success'),
+        t(editingDatabase ? 'mobileParity.groupManagement.updated' : 'mobileParity.groupManagement.created'),
+      );
     } else {
-      Alert.alert('Error', result.error || 'Failed to save bill group');
+      Alert.alert(t('mobileParity.common.error'), result.error || t('mobileParity.groupManagement.saveFailed'));
     }
   };
 
   const handleDelete = (db: DatabaseWithAccess) => {
     Alert.alert(
-      'Delete Bill Group',
-      `Are you sure you want to delete "${db.display_name}"? This will permanently delete all bills and payments in this group.`,
+      t('mobileParity.groupManagement.deleteTitle'),
+      t('mobileParity.groupManagement.deleteBody', { name: db.display_name }),
       [
-        { text: 'Cancel', style: 'cancel' },
+        { text: t('mobileParity.common.cancel'), style: 'cancel' },
         {
-          text: 'Delete',
+          text: t('mobileParity.common.delete'),
           style: 'destructive',
           onPress: async () => {
             const result = await api.deleteDatabase(db.id);
             if (result.success) {
               fetchDatabases();
               refreshDatabases();
-              Alert.alert('Success', 'Bill group deleted');
+              Alert.alert(t('mobileParity.common.success'), t('mobileParity.groupManagement.deleted'));
             } else {
-              Alert.alert('Error', result.error || 'Failed to delete bill group');
+              Alert.alert(t('mobileParity.common.error'), result.error || t('mobileParity.groupManagement.deleteFailed'));
             }
           },
         },
@@ -177,7 +182,7 @@ export default function DatabaseManagementScreen({ navigation }: Props) {
     if (result.success) {
       fetchDatabases();
     } else {
-      Alert.alert('Error', result.error || 'Failed to add user access');
+      Alert.alert(t('mobileParity.common.error'), result.error || t('mobileParity.groupManagement.addAccessFailed'));
     }
   };
 
@@ -185,19 +190,22 @@ export default function DatabaseManagementScreen({ navigation }: Props) {
     if (!selectedDatabase) return;
 
     Alert.alert(
-      'Remove Access',
-      `Remove ${username}'s access to "${selectedDatabase.display_name}"?`,
+      t('mobileParity.groupManagement.removeAccessTitle'),
+      t('mobileParity.groupManagement.removeAccessBody', {
+        user: username,
+        group: selectedDatabase.display_name,
+      }),
       [
-        { text: 'Cancel', style: 'cancel' },
+        { text: t('mobileParity.common.cancel'), style: 'cancel' },
         {
-          text: 'Remove',
+          text: t('mobileParity.common.remove'),
           style: 'destructive',
           onPress: async () => {
             const result = await api.removeDatabaseAccess(selectedDatabase.id, userId);
             if (result.success) {
               fetchDatabases();
             } else {
-              Alert.alert('Error', result.error || 'Failed to remove user access');
+              Alert.alert(t('mobileParity.common.error'), result.error || t('mobileParity.groupManagement.removeAccessFailed'));
             }
           },
         },
@@ -226,14 +234,14 @@ export default function DatabaseManagementScreen({ navigation }: Props) {
             style={[styles.editButton, { backgroundColor: colors.border }]}
             onPress={() => openEditModal(item)}
           >
-            <Text style={[styles.editButtonText, { color: colors.text }]}>Edit</Text>
+            <Text style={[styles.editButtonText, { color: colors.text }]}>{t('mobileParity.common.edit')}</Text>
           </TouchableOpacity>
         </View>
 
         {userCount > 0 && (
           <View style={styles.usersSection}>
             <Text style={[styles.usersLabel, { color: colors.textMuted }]}>
-              {userCount} user{userCount !== 1 ? 's' : ''} with access:
+              {t('mobileParity.groupManagement.accessCount', { count: userCount })}
             </Text>
             <View style={styles.usersList}>
               {item.users?.map((user) => (
@@ -245,7 +253,7 @@ export default function DatabaseManagementScreen({ navigation }: Props) {
                     {user.username}
                   </Text>
                   <Text style={[styles.userRoleText, { color: colors.textMuted }]}>
-                    ({user.role})
+                    ({user.role === 'admin' ? t('mobileParity.common.admin') : t('mobileParity.common.user')})
                   </Text>
                 </View>
               ))}
@@ -258,13 +266,13 @@ export default function DatabaseManagementScreen({ navigation }: Props) {
             style={[styles.manageUsersButton, { backgroundColor: colors.primary }]}
             onPress={() => openUserAccessModal(item)}
           >
-            <Text style={styles.manageUsersButtonText}>Manage Users</Text>
+            <Text style={styles.manageUsersButtonText}>{t('mobileParity.groupManagement.manageUsers')}</Text>
           </TouchableOpacity>
           <TouchableOpacity
             style={[styles.deleteButton, { backgroundColor: colors.danger }]}
             onPress={() => handleDelete(item)}
           >
-            <Text style={styles.deleteButtonText}>Delete Group</Text>
+            <Text style={styles.deleteButtonText}>{t('mobileParity.groupManagement.deleteGroup')}</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -283,11 +291,11 @@ export default function DatabaseManagementScreen({ navigation }: Props) {
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       <View style={[styles.header, { backgroundColor: colors.surface }]}>
         <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton}>
-          <Text style={[styles.backButtonText, { color: colors.primary }]}>← Back</Text>
+          <Text style={[styles.backButtonText, { color: colors.primary }]}>← {t('mobileParity.common.back')}</Text>
         </TouchableOpacity>
-        <Text style={[styles.headerTitle, { color: colors.text }]}>Bill Groups</Text>
+        <Text style={[styles.headerTitle, { color: colors.text }]}>{t('mobileParity.groupManagement.title')}</Text>
         <TouchableOpacity onPress={openCreateModal} style={styles.addButton}>
-          <Text style={[styles.addButtonText, { color: colors.primary }]}>+ New</Text>
+          <Text style={[styles.addButtonText, { color: colors.primary }]}>+ {t('mobileParity.groupManagement.new')}</Text>
         </TouchableOpacity>
       </View>
 
@@ -298,7 +306,7 @@ export default function DatabaseManagementScreen({ navigation }: Props) {
             style={[styles.retryButton, { backgroundColor: colors.primary }]}
             onPress={fetchDatabases}
           >
-            <Text style={styles.retryButtonText}>Retry</Text>
+            <Text style={styles.retryButtonText}>{t('mobileParity.common.retry')}</Text>
           </TouchableOpacity>
         </View>
       ) : (
@@ -317,16 +325,16 @@ export default function DatabaseManagementScreen({ navigation }: Props) {
           }
           ListEmptyComponent={
             <View style={styles.emptyContainer}>
-              <Text style={[styles.emptyText, { color: colors.textMuted }]}>No bill groups yet</Text>
+              <Text style={[styles.emptyText, { color: colors.textMuted }]}>{t('mobileParity.groupManagement.noGroups')}</Text>
               <Text style={[styles.emptySubtext, { color: colors.textMuted }]}>
-                Tap "+ New" to create your first group
+                {t('mobileParity.groupManagement.emptyBody')}
               </Text>
             </View>
           }
           ListHeaderComponent={
             databases.length > 0 ? (
               <Text style={[styles.sectionHeader, { color: colors.textMuted }]}>
-                {databases.length} bill group{databases.length !== 1 ? 's' : ''}
+                {t('mobileParity.groupManagement.count', { count: databases.length })}
               </Text>
             ) : null
           }
@@ -343,12 +351,12 @@ export default function DatabaseManagementScreen({ navigation }: Props) {
         <View style={styles.modalOverlay}>
           <View style={[styles.modalContent, { backgroundColor: colors.surface }]}>
             <Text style={[styles.modalTitle, { color: colors.text }]}>
-              {editingDatabase ? 'Edit Bill Group' : 'New Bill Group'}
+              {t(editingDatabase ? 'mobileParity.groupManagement.editTitle' : 'mobileParity.groupManagement.newTitle')}
             </Text>
 
             {!editingDatabase && (
               <>
-                <Text style={[styles.inputLabel, { color: colors.textMuted }]}>Internal Name</Text>
+                <Text style={[styles.inputLabel, { color: colors.textMuted }]}>{t('mobileParity.groupManagement.internalName')}</Text>
                 <TextInput
                   style={[styles.input, {
                     backgroundColor: colors.background,
@@ -357,17 +365,17 @@ export default function DatabaseManagementScreen({ navigation }: Props) {
                   }]}
                   value={name}
                   onChangeText={setName}
-                  placeholder="personal, business, etc."
+                  placeholder={t('mobileParity.groupManagement.internalPlaceholder')}
                   placeholderTextColor={colors.textMuted}
                   autoCapitalize="none"
                 />
                 <Text style={[styles.inputHint, { color: colors.textMuted }]}>
-                  Cannot be changed after creation
+                  {t('mobileParity.groupManagement.immutable')}
                 </Text>
               </>
             )}
 
-            <Text style={[styles.inputLabel, { color: colors.textMuted }]}>Display Name</Text>
+            <Text style={[styles.inputLabel, { color: colors.textMuted }]}>{t('mobileParity.groupManagement.displayName')}</Text>
             <TextInput
               style={[styles.input, {
                 backgroundColor: colors.background,
@@ -376,7 +384,7 @@ export default function DatabaseManagementScreen({ navigation }: Props) {
               }]}
               value={displayName}
               onChangeText={setDisplayName}
-              placeholder="Personal Bills, Business Expenses, etc."
+              placeholder={t('mobileParity.groupManagement.displayPlaceholder')}
               placeholderTextColor={colors.textMuted}
             />
 
@@ -386,7 +394,7 @@ export default function DatabaseManagementScreen({ navigation }: Props) {
                 onPress={() => setShowModal(false)}
                 disabled={isSubmitting}
               >
-                <Text style={[styles.cancelButtonText, { color: colors.text }]}>Cancel</Text>
+                <Text style={[styles.cancelButtonText, { color: colors.text }]}>{t('mobileParity.common.cancel')}</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={[styles.confirmButton, { backgroundColor: colors.primary }, isSubmitting && styles.buttonDisabled]}
@@ -397,7 +405,7 @@ export default function DatabaseManagementScreen({ navigation }: Props) {
                   <ActivityIndicator color="#fff" size="small" />
                 ) : (
                   <Text style={styles.confirmButtonText}>
-                    {editingDatabase ? 'Save' : 'Create'}
+                    {t(editingDatabase ? 'mobileParity.common.save' : 'mobileParity.common.create')}
                   </Text>
                 )}
               </TouchableOpacity>
@@ -416,7 +424,7 @@ export default function DatabaseManagementScreen({ navigation }: Props) {
         <View style={styles.modalOverlay}>
           <View style={[styles.modalContent, { backgroundColor: colors.surface, maxHeight: '80%' }]}>
             <Text style={[styles.modalTitle, { color: colors.text }]}>
-              Manage Access
+              {t('mobileParity.groupManagement.manageAccess')}
             </Text>
             {selectedDatabase && (
               <Text style={[styles.modalSubtitle, { color: colors.textMuted }]}>
@@ -432,7 +440,7 @@ export default function DatabaseManagementScreen({ navigation }: Props) {
                 {selectedDatabase?.users && selectedDatabase.users.length > 0 && (
                   <View style={styles.userAccessSection}>
                     <Text style={[styles.userAccessSectionTitle, { color: colors.text }]}>
-                      Users with access
+                      {t('mobileParity.groupManagement.usersWithAccess')}
                     </Text>
                     {selectedDatabase.users.map((user) => (
                       <View
@@ -444,14 +452,14 @@ export default function DatabaseManagementScreen({ navigation }: Props) {
                             {user.username}
                           </Text>
                           <Text style={[styles.userAccessRole, { color: colors.textMuted }]}>
-                            {user.role}
+                            {user.role === 'admin' ? t('mobileParity.common.admin') : t('mobileParity.common.user')}
                           </Text>
                         </View>
                         <TouchableOpacity
                           style={[styles.removeAccessButton, { backgroundColor: colors.danger }]}
                           onPress={() => handleRemoveUserAccess(user.user_id, user.username)}
                         >
-                          <Text style={styles.removeAccessButtonText}>Remove</Text>
+                          <Text style={styles.removeAccessButtonText}>{t('mobileParity.common.remove')}</Text>
                         </TouchableOpacity>
                       </View>
                     ))}
@@ -462,7 +470,7 @@ export default function DatabaseManagementScreen({ navigation }: Props) {
                 {getAvailableUsers().length > 0 && (
                   <View style={styles.userAccessSection}>
                     <Text style={[styles.userAccessSectionTitle, { color: colors.text }]}>
-                      Add users
+                      {t('mobileParity.groupManagement.addUsers')}
                     </Text>
                     {getAvailableUsers().map((user) => (
                       <View
@@ -474,14 +482,14 @@ export default function DatabaseManagementScreen({ navigation }: Props) {
                             {user.username}
                           </Text>
                           <Text style={[styles.userAccessRole, { color: colors.textMuted }]}>
-                            {user.role}
+                            {user.role === 'admin' ? t('mobileParity.common.admin') : t('mobileParity.common.user')}
                           </Text>
                         </View>
                         <TouchableOpacity
                           style={[styles.addAccessButton, { backgroundColor: colors.success }]}
                           onPress={() => handleAddUserAccess(user.id)}
                         >
-                          <Text style={styles.addAccessButtonText}>Add</Text>
+                          <Text style={styles.addAccessButtonText}>{t('mobileParity.common.add')}</Text>
                         </TouchableOpacity>
                       </View>
                     ))}
@@ -490,7 +498,7 @@ export default function DatabaseManagementScreen({ navigation }: Props) {
 
                 {selectedDatabase?.users?.length === 0 && getAvailableUsers().length === 0 && (
                   <Text style={[styles.noUsersText, { color: colors.textMuted }]}>
-                    No users available
+                    {t('mobileParity.groupManagement.noUsers')}
                   </Text>
                 )}
               </View>
@@ -500,7 +508,7 @@ export default function DatabaseManagementScreen({ navigation }: Props) {
               style={[styles.closeButton, { backgroundColor: colors.border }]}
               onPress={() => setShowUserAccessModal(false)}
             >
-              <Text style={[styles.closeButtonText, { color: colors.text }]}>Done</Text>
+              <Text style={[styles.closeButtonText, { color: colors.text }]}>{t('mobileParity.common.done')}</Text>
             </TouchableOpacity>
           </View>
         </View>

@@ -9,11 +9,14 @@ This module should be added to your production BillManager instance to:
 """
 
 import os
+import json
+import uuid
 import logging
 import time
 import secrets
+import threading
 import requests
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from flask import Blueprint, request, jsonify
 from sqlalchemy import desc
 
@@ -23,30 +26,106 @@ logger = logging.getLogger(__name__)
 telemetry_receiver_bp = Blueprint('telemetry_receiver', __name__)
 
 # Security controls
-TELEMETRY_RECEIVER_REQUIRE_AUTH = os.environ.get('TELEMETRY_RECEIVER_REQUIRE_AUTH', 'true').lower() == 'true'
 TELEMETRY_RECEIVER_API_KEY = os.environ.get('TELEMETRY_RECEIVER_API_KEY')
 TELEMETRY_MAX_PAYLOAD_BYTES = int(os.environ.get('TELEMETRY_MAX_PAYLOAD_BYTES', '16384'))
 TELEMETRY_INGEST_RATE_PER_MINUTE = int(os.environ.get('TELEMETRY_INGEST_RATE_PER_MINUTE', '60'))
 TELEMETRY_STATS_RATE_PER_MINUTE = int(os.environ.get('TELEMETRY_STATS_RATE_PER_MINUTE', '30'))
+TELEMETRY_RATE_LIMIT_MAX_BUCKETS = int(
+    os.environ.get('TELEMETRY_RATE_LIMIT_MAX_BUCKETS', '10000')
+)
+TELEMETRY_DEDUPE_MINUTES = int(os.environ.get('TELEMETRY_DEDUPE_MINUTES', '10'))
+TELEMETRY_SUBMISSION_RETENTION_DAYS = int(
+    os.environ.get('TELEMETRY_SUBMISSION_RETENTION_DAYS', '400')
+)
 TELEMETRY_TRUSTED_PROXY_IPS = {
     ip.strip() for ip in os.environ.get('TELEMETRY_TRUSTED_PROXY_IPS', '').split(',') if ip.strip()
 }
 
+# Anonymous installations cannot safely share a secret baked into the client.
+# Ingestion is therefore public by default and protected by payload validation,
+# size limits, and rate limiting. A legacy receiver-wide auth setting is still
+# honored for ingestion when explicitly configured. Stats always require auth.
+_legacy_receiver_auth = os.environ.get('TELEMETRY_RECEIVER_REQUIRE_AUTH')
+TELEMETRY_INGEST_REQUIRE_AUTH = os.environ.get(
+    'TELEMETRY_INGEST_REQUIRE_AUTH',
+    _legacy_receiver_auth if _legacy_receiver_auth is not None else 'false',
+).lower() == 'true'
+
 _rate_window_seconds = 60
 _request_buckets: dict[str, list[float]] = {}
+_rate_limit_lock = threading.Lock()
+_last_bucket_cleanup = 0.0
+_retention_lock = threading.Lock()
+_last_retention_cleanup = 0.0
 
 
 def _rate_limit(bucket_key: str, limit_per_minute: int) -> bool:
-    """Simple in-memory sliding-window limiter."""
+    """Bounded, thread-safe in-memory sliding-window limiter."""
+    global _last_bucket_cleanup
+
     now = time.time()
-    bucket = _request_buckets.get(bucket_key, [])
-    bucket = [ts for ts in bucket if now - ts < _rate_window_seconds]
-    if len(bucket) >= limit_per_minute:
+    with _rate_limit_lock:
+        if now - _last_bucket_cleanup >= _rate_window_seconds:
+            for key, timestamps in list(_request_buckets.items()):
+                active = [
+                    ts for ts in timestamps if now - ts < _rate_window_seconds
+                ]
+                if active:
+                    _request_buckets[key] = active
+                else:
+                    _request_buckets.pop(key, None)
+            _last_bucket_cleanup = now
+
+        bucket = [
+            ts for ts in _request_buckets.get(bucket_key, [])
+            if now - ts < _rate_window_seconds
+        ]
+        if len(bucket) >= limit_per_minute:
+            _request_buckets[bucket_key] = bucket
+            return False
+
+        if (
+            bucket_key not in _request_buckets
+            and TELEMETRY_RATE_LIMIT_MAX_BUCKETS > 0
+            and len(_request_buckets) >= TELEMETRY_RATE_LIMIT_MAX_BUCKETS
+        ):
+            oldest_key = min(
+                _request_buckets,
+                key=lambda key: _request_buckets[key][-1]
+                if _request_buckets[key]
+                else 0,
+            )
+            _request_buckets.pop(oldest_key, None)
+
+        bucket.append(now)
         _request_buckets[bucket_key] = bucket
-        return False
-    bucket.append(now)
-    _request_buckets[bucket_key] = bucket
     return True
+
+
+def _cleanup_old_submissions(db, submission_model) -> None:
+    """Run bounded receiver retention at most once per process per day."""
+    global _last_retention_cleanup
+
+    if TELEMETRY_SUBMISSION_RETENTION_DAYS <= 0:
+        return
+
+    now_epoch = time.time()
+    with _retention_lock:
+        if now_epoch - _last_retention_cleanup < 86400:
+            return
+
+        try:
+            cutoff = datetime.now(timezone.utc) - timedelta(
+                days=TELEMETRY_SUBMISSION_RETENTION_DAYS
+            )
+            submission_model.query.filter(
+                submission_model.received_at < cutoff
+            ).delete(synchronize_session=False)
+            db.session.commit()
+            _last_retention_cleanup = now_epoch
+        except Exception as e:
+            db.session.rollback()
+            logger.warning("Failed to clean up old telemetry submissions: %s", e)
 
 
 def _is_admin_jwt() -> bool:
@@ -74,9 +153,9 @@ def _is_valid_api_key() -> bool:
     return secrets.compare_digest(supplied, TELEMETRY_RECEIVER_API_KEY)
 
 
-def _require_receiver_auth():
+def _require_receiver_auth(required: bool = True):
     """Return (response, status) tuple when auth fails, else None."""
-    if not TELEMETRY_RECEIVER_REQUIRE_AUTH:
+    if not required:
         return None
 
     if not TELEMETRY_RECEIVER_API_KEY and not request.headers.get('Authorization'):
@@ -126,20 +205,70 @@ def receive_telemetry():
         if rate_limited:
             return rate_limited
 
-        auth_error = _require_receiver_auth()
+        auth_error = _require_receiver_auth(TELEMETRY_INGEST_REQUIRE_AUTH)
         if auth_error:
             return auth_error
 
-        data = request.get_json()
+        data = request.get_json(silent=True)
 
-        if not data or 'instance_id' not in data:
+        if not isinstance(data, dict) or 'instance_id' not in data:
             return jsonify({'error': 'Invalid telemetry data'}), 400
 
         instance_id = data.get('instance_id')
-        if not isinstance(instance_id, str) or not instance_id.strip() or len(instance_id) > 128:
+        if not isinstance(instance_id, str):
             return jsonify({'error': 'Invalid telemetry data'}), 400
+        instance_id = instance_id.strip()
+        if not instance_id or len(instance_id) > 64:
+            return jsonify({'error': 'Invalid telemetry data'}), 400
+        try:
+            canonical_instance_id = str(uuid.UUID(instance_id))
+        except ValueError:
+            return jsonify({'error': 'Invalid telemetry data'}), 400
+        if canonical_instance_id != instance_id.lower():
+            return jsonify({'error': 'Invalid telemetry data'}), 400
+        instance_id = canonical_instance_id
+
         deployment_mode = data.get('deployment_mode', 'unknown')
         version = data.get('version', 'unknown')
+        installation_date = data.get('installation_date')
+        metrics = data.get('metrics', {})
+        platform = data.get('platform', {})
+
+        if deployment_mode not in {'saas', 'self-hosted', 'local-dev', 'unknown'}:
+            return jsonify({'error': 'Invalid telemetry data'}), 400
+        if not isinstance(version, str) or len(version) > 20:
+            return jsonify({'error': 'Invalid telemetry data'}), 400
+        if installation_date is not None and (
+            not isinstance(installation_date, str) or len(installation_date) > 50
+        ):
+            return jsonify({'error': 'Invalid telemetry data'}), 400
+        if not isinstance(metrics, dict) or not isinstance(platform, dict):
+            return jsonify({'error': 'Invalid telemetry data'}), 400
+
+        metrics_json = json.dumps(metrics, separators=(',', ':'), sort_keys=True)
+        platform_json = json.dumps(platform, separators=(',', ':'), sort_keys=True)
+
+        if TELEMETRY_DEDUPE_MINUTES > 0:
+            dedupe_cutoff = datetime.now(timezone.utc) - timedelta(
+                minutes=TELEMETRY_DEDUPE_MINUTES
+            )
+            duplicate = TelemetrySubmission.query.filter_by(
+                instance_id=instance_id,
+                version=version,
+                deployment_mode=deployment_mode,
+                installation_date=installation_date,
+                metrics_json=metrics_json,
+                platform_json=platform_json,
+            ).filter(
+                TelemetrySubmission.received_at >= dedupe_cutoff
+            ).first()
+            if duplicate:
+                return jsonify({
+                    'success': True,
+                    'message': 'Telemetry already received',
+                    'is_new': False,
+                    'duplicate': True,
+                }), 200
 
         # Check if this is a new instance
         existing = TelemetrySubmission.query.filter_by(instance_id=instance_id).first()
@@ -158,14 +287,15 @@ def receive_telemetry():
             instance_id=instance_id,
             version=version,
             deployment_mode=deployment_mode,
-            installation_date=data.get('installation_date'),
-            metrics_json=str(data.get('metrics', {})),
-            platform_json=str(data.get('platform', {})),
+            installation_date=installation_date,
+            metrics_json=metrics_json,
+            platform_json=platform_json,
             received_at=datetime.now(timezone.utc)
         )
 
         db.session.add(submission)
         db.session.commit()
+        _cleanup_old_submissions(db, TelemetrySubmission)
 
         logger.info(f"Telemetry received from {instance_id} (mode: {deployment_mode}, version: {version}, new: {is_new_instance})")
 
@@ -176,10 +306,15 @@ def receive_telemetry():
         return jsonify({
             'success': True,
             'message': 'Telemetry received',
-            'is_new': is_new_instance
+            'is_new': is_new_instance,
+            'duplicate': False,
         }), 200
 
     except Exception as e:
+        try:
+            db.session.rollback()
+        except Exception as rollback_error:
+            logger.debug("Failed to roll back telemetry transaction: %s", rollback_error)
         logger.error(f"Failed to process telemetry: {e}", exc_info=True)
         return jsonify({'error': 'Failed to process telemetry'}), 500
 
@@ -248,7 +383,9 @@ def get_telemetry_stats():
         if rate_limited:
             return rate_limited
 
-        auth_error = _require_receiver_auth()
+        # Aggregated stats and recent instance identifiers are never public,
+        # even when anonymous ingestion is enabled.
+        auth_error = _require_receiver_auth(required=True)
         if auth_error:
             return auth_error
 
