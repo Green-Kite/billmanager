@@ -5,6 +5,14 @@ import datetime
 from models import Bill, CategoryBudget, Database, Payment
 
 
+def _as_rfc3339(value):
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=datetime.timezone.utc)
+    else:
+        value = value.astimezone(datetime.timezone.utc)
+    return value.isoformat().replace("+00:00", "Z")
+
+
 def _create_isolated_database(db_session):
     database = Database(name="isolated", display_name="Isolated Database")
     db_session.add(database)
@@ -111,26 +119,54 @@ class TestSyncIntegrity:
         )
         db_session.add(payment)
         db_session.commit()
+        bill_base = _as_rfc3339(isolated_bill.last_updated)
+        payment_base = _as_rfc3339(payment.updated_at)
 
-        response = client.post(
+        update_response = client.post(
             "/api/v2/sync/push",
             headers=auth_headers_with_db,
             json={
-                "bills": [{"id": isolated_bill.id, "name": "Stolen Bill"}],
-                "payments": [{"id": payment.id, "amount": 1.0}],
-                "deleted_bills": [isolated_bill.id],
-                "deleted_payments": [payment.id],
+                "bills": [
+                    {
+                        "id": isolated_bill.id,
+                        "name": "Stolen Bill",
+                        "base_updated_at": bill_base,
+                    }
+                ],
+                "payments": [
+                    {
+                        "id": payment.id,
+                        "amount": 1.0,
+                        "base_updated_at": payment_base,
+                    }
+                ],
+            },
+        )
+        delete_response = client.post(
+            "/api/v2/sync/push",
+            headers=auth_headers_with_db,
+            json={
+                "deleted_bills": [
+                    {"id": isolated_bill.id, "base_updated_at": bill_base}
+                ],
+                "deleted_payments": [
+                    {"id": payment.id, "base_updated_at": payment_base}
+                ],
             },
         )
 
-        assert response.status_code == 200
-        data = response.get_json()["data"]
+        assert update_response.status_code == 200
+        assert delete_response.status_code == 200
+        data = update_response.get_json()["data"]
         assert data["rejected_bills"] == [
             {"id": isolated_bill.id, "reason": "not_found"}
         ]
         assert data["rejected_payments"] == [
             {"id": payment.id, "reason": "access_denied"}
         ]
+        delete_data = delete_response.get_json()["data"]
+        assert delete_data["accepted_bills"] == []
+        assert delete_data["accepted_payments"] == []
         db_session.refresh(isolated_bill)
         db_session.refresh(payment)
         assert isolated_bill.name == "Private Bill"

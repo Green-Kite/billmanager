@@ -104,6 +104,66 @@ jobs:
           cd apps/web
           npm audit --audit-level=high
 
+  test-mobile:
+    name: Mobile Contract, Tests & SDK Compatibility
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24.18.0'
+          cache: 'npm'
+          cache-dependency-path: apps/mobile/package-lock.json
+
+      - name: Install mobile dependencies
+        run: |
+          cd apps/mobile
+          npm ci
+
+      - name: Verify shared translations are synchronized
+        run: |
+          cd apps/mobile
+          npm run i18n:sync
+          git diff --exit-code -- src/i18n/locales
+
+      - name: Verify generated API contract is synchronized
+        run: |
+          cd apps/mobile
+          npm run api:check
+
+      - name: Run mobile lint, typecheck, and tests
+        run: |
+          cd apps/mobile
+          npm run lint
+          npm run typecheck
+          npm test
+
+      - name: Validate Maestro device-flow definitions
+        run: |
+          cd apps/mobile
+          npm run maestro:validate
+
+      - name: Validate native build transport profiles
+        run: |
+          cd apps/mobile
+          npm run config:validate
+
+      - name: Verify Expo SDK compatibility
+        run: |
+          cd apps/mobile
+          npx expo install --check
+          npm run doctor
+
+      - name: Run mobile npm audit
+        run: |
+          cd apps/mobile
+          npm audit --audit-level=high
+
   security-scan:
     name: Secrets Scan
     runs-on: ubuntu-latest
@@ -122,7 +182,7 @@ jobs:
 
   build:
     name: Build Docker Image
-    needs: [test-backend, test-frontend, security-scan]
+    needs: [test-backend, test-frontend, test-mobile, security-scan]
     runs-on: ubuntu-latest
     permissions:
       contents: read

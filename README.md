@@ -31,7 +31,7 @@ A **secure multi-user** web application for tracking recurring expenses and inco
 - **Enhanced Frequencies**: Weekly, bi-weekly, monthly (including 1st & 15th), quarterly, yearly, and custom schedules
 - **Auto-Payments**: Automatic payment processing for recurring transactions
 - **Modern UI**: Responsive design with dark/light mode, 70+ custom icons, and visual calendar
-- **Mobile App**: Native iOS and Android apps with offline support and push notifications
+- **Mobile Rewrite (in development)**: Native-adaptive iOS and Android clients with offline support and local actionable reminders; public replacement release gates are still open
 - **Email Invitations**: Invite users via email with configurable roles and access control
 - **Bill Groups**: Organize finances into separate groups (personal, business, family, etc.)
 - **Bill Sharing**: Share bills with other users and split costs by percentage, fixed amount, or equally
@@ -64,6 +64,8 @@ What these commands do:
 - `make dev-up` builds and starts the local Docker stack from `docker-compose.dev.yml`
 - `make test` runs backend, web, and mobile tests
 - `make verify` runs the full test suite plus backend security checks
+
+Mobile development uses an Expo development client rather than Expo Go. See the [mobile build and release-readiness guide](apps/mobile/README.md).
 
 Useful day-to-day commands:
 
@@ -201,6 +203,7 @@ postgresql://USERNAME:PASSWORD@HOST:PORT/DATABASE
 | `WEBAUTHN_RP_ID` | WebAuthn relying party ID (domain only) | Derived from `APP_URL` |
 | `WEBAUTHN_RP_NAME` | WebAuthn relying party display name | `BillManager` |
 | `WEBAUTHN_ORIGIN` | WebAuthn origin (must match app origin) | `APP_URL` |
+| `WEBAUTHN_ANDROID_ORIGINS` | Comma-separated `android:apk-key-hash:` origins for trusted Android signing certificates | unset |
 | `OAUTH_AUTO_REGISTER` | Auto-create users during social sign-in | `true` in self-hosted, `false` in SaaS |
 | `OAUTH_GOOGLE_ENABLED` | Enable Google sign-in | `false` |
 | `OAUTH_GOOGLE_CLIENT_ID` | Google OAuth client ID | None |
@@ -241,7 +244,7 @@ This ensures secure self-hosted deployments while remaining flexible for develop
 
 #### 2FA and Social Login Notes
 
-- For passkeys in production, set `ENABLE_2FA=true`, `ENABLE_PASSKEYS=true`, `WEBAUTHN_RP_ID`, and `WEBAUTHN_ORIGIN`.
+- For passkeys in production, set `ENABLE_2FA=true`, `ENABLE_PASSKEYS=true`, `WEBAUTHN_RP_ID`, and `WEBAUTHN_ORIGIN`. Android development/release builds also require their exact Credential Manager origins in `WEBAUTHN_ANDROID_ORIGINS` and a matching `/.well-known/assetlinks.json` statement.
 - For Apple sign-in, `OAUTH_APPLE_PRIVATE_KEY` may be provided as a single line with `\n` escapes.
 - OAuth callback URL for Google/Apple should be: `https://<your-domain>/auth/callback`.
 - For Microsoft sign-in, register an app in Azure AD and set redirect URI to: `https://<your-domain>/auth/callback`

@@ -1,0 +1,22 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'com.brdweb.billmanager.passkeys'
+version = '0.1.0'
+
+android {
+  namespace "com.brdweb.billmanager.passkeys"
+  defaultConfig {
+    versionCode 1
+    versionName "0.1.0"
+  }
+}
+
+dependencies {
+  // 1.6.0 is the current stable Credential Manager release. Keep both artifacts
+  // aligned so Android 9-13 can use the Google Play services provider.
+  implementation "androidx.credentials:credentials:1.6.0"
+  implementation "androidx.credentials:credentials-play-services-auth:1.6.0"
+}

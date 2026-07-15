@@ -699,7 +699,7 @@ export const createCheckoutSession = (tier: string = 'basic', interval: string =
 export const createPortalSession = () =>
   unwrap(api.post<ApiResponse<CheckoutResponse>>('/billing/portal'));
 
-// Telemetry API (v1 - session auth)
+// Telemetry API (v2 JWT auth)
 export interface TelemetryNoticeResponse {
   success: boolean;
   data: {

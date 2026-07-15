@@ -19,7 +19,7 @@ BillManager includes an **optional** anonymous telemetry system to help improve 
 - **Installation Date**: When first deployed
 
 ### Usage Metrics
-- **Users**: Total count, admin vs regular, active users (30 days)
+- **Users**: Total count, admin vs regular, and users with a successful login in the prior 30 days
 - **Data**: Total bills, payments, databases (bill groups)
 - **Features**: Auto-pay usage, variable bills, mobile devices registered
 - **Engagement**: Average bills per database
@@ -33,7 +33,8 @@ BillManager includes an **optional** anonymous telemetry system to help improve 
 ### SaaS-Only Metrics (when in SaaS mode)
 - **Subscription Tiers**: Distribution of free/basic/plus users
 - **Billing Intervals**: Monthly vs annual preference
-- **Trial Conversions**: Aggregate conversion rates
+- **Subscription Statuses**: Aggregate status distribution
+- **Deployment Identification**: Configured server URL and public server IP, used only to alert the operator about a newly detected SaaS deployment
 
 ## Configuration
 
@@ -51,6 +52,19 @@ DEPLOYMENT_MODE=self-hosted  # or 'saas' or 'local-dev'
 
 # Optional: Deployment method (helps with platform stats)
 DEPLOYMENT_METHOD=docker  # or 'bare-metal', 'kubernetes', etc.
+
+# Optional: Persist the anonymous ID at a custom mounted path
+TELEMETRY_INSTANCE_ID_FILE=/data/.instance_id
+
+# Optional: Supply a stable UUID directly (overrides the ID file)
+TELEMETRY_INSTANCE_ID=550e8400-e29b-41d4-a716-446655440000
+
+# Optional reliability tuning (defaults shown)
+TELEMETRY_SEND_ATTEMPTS=3
+TELEMETRY_RETRY_BASE_SECONDS=1
+TELEMETRY_RETRY_MAX_SECONDS=30
+TELEMETRY_MIN_SEND_INTERVAL_HOURS=20
+TELEMETRY_LOCAL_LOG_RETENTION_DAYS=90
 ```
 
 ### For Self-Hosted Users
@@ -62,12 +76,52 @@ environment:
   - TELEMETRY_ENABLED=false  # Disable telemetry
 ```
 
+### For Telemetry Receiver Operators
+
+The ingestion endpoint accepts anonymous submissions by default, with payload
+size, schema, and per-IP rate limits. The statistics endpoint always requires
+an admin JWT or `TELEMETRY_RECEIVER_API_KEY`.
+
+```bash
+# Optional: require the shared key on ingestion as well as statistics
+TELEMETRY_INGEST_REQUIRE_AUTH=true
+TELEMETRY_RECEIVER_API_KEY=change-this-to-a-long-random-string
+
+# Set the same key on each explicitly provisioned sender
+TELEMETRY_API_KEY=change-this-to-a-long-random-string
+
+# Receiver safety and retention controls (defaults shown)
+TELEMETRY_RATE_LIMIT_MAX_BUCKETS=10000
+TELEMETRY_DEDUPE_MINUTES=10
+TELEMETRY_SUBMISSION_RETENTION_DAYS=400
+```
+
+The built-in limiter is thread-safe and memory-bounded, but intentionally
+process-local. For a receiver with multiple web workers, enforce the global
+request limit at the existing Cloudflare or Traefik edge. This avoids adding a
+Redis dependency while retaining the application limiter as defense in depth.
+
+### Consent and Active-User Tracking
+
+Telemetry consent is stored once per BillManager instance as `pending`,
+`enabled`, or `disabled`. Pending consent fails closed and sends nothing. When
+upgrading from the older per-owner setting, any existing owner opt-out wins;
+otherwise a prior acceptance is preserved, and installations without a choice
+remain pending.
+
+Successful authentication updates a local `last_login_at` timestamp at most
+once per rolling 24-hour period. Only the aggregate number of users active in
+the prior 30 days is included in telemetry; individual login timestamps are
+never sent.
+
 ## Telemetry Schedule
 
 - **First send**: 5 minutes after startup
 - **Recurring**: Daily at 2:00 AM UTC
 - **Timeout**: 10 seconds per request
-- **Retries**: None (failures logged locally, will retry next cycle)
+- **Retries**: Up to 3 attempts with bounded exponential backoff and jitter
+- **Duplicate suppression**: Successful sends within the prior 20 hours are skipped
+- **Worker coordination**: PostgreSQL advisory lock prevents overlapping scheduler sends
 
 ## Viewing Local Telemetry Logs
 
@@ -109,7 +163,7 @@ LIMIT 1;
       "total": 5,
       "admins": 2,
       "regular": 3,
-      "active_30d": 4,
+      "active_30d": 0,
       "account_owners": 1
     },
     "data": {
@@ -155,7 +209,7 @@ LIMIT 1;
 **A:** Yes! Check the `telemetry_log` table in your database. The `metrics_snapshot` column contains the full JSON payload.
 
 ### Q: What if telemetry sending fails?
-**A:** Failures are logged locally with error messages. The app continues running normally. Next send attempt occurs at the scheduled time.
+**A:** Transient network errors, rate limits, and selected server errors are retried with backoff. One final result is logged locally, and the app continues running normally.
 
 ### Q: Does telemetry slow down the app?
 **A:** No. Telemetry runs in a background thread and doesn't block app requests. Collection takes ~50ms, sending happens async.
@@ -180,20 +234,33 @@ Planned features for the telemetry dashboard on your production server:
 - Geographic distribution (country-level only, via IP geolocation)
 - Active installations (based on last ping)
 
+## Reliability Without New Infrastructure
+
+The sender, receiver, instance consent, active-user measurement, retries,
+deduplication, retention, and scheduler coordination use only Python's standard
+library, the existing APScheduler process, and BillManager's PostgreSQL
+database.
+
+For production abuse protection, add an edge rule limited to `POST
+/api/telemetry` (for example, a modest per-IP burst/rate limit and a 16 KiB body
+cap). Keep `/api/telemetry/stats` authenticated. Cloudflare or Traefik can do
+this with the infrastructure already in the deployment path.
+
 ## Implementation Details
 
 ### Files
-- `services/telemetry.py` - Collection and sending logic
-- `services/scheduler.py` - Background task scheduler
-- `services/telemetry_receiver.py` - Receiver endpoint (production only)
-- `models.py` - `TelemetryLog` and `TelemetrySubmission` models
+- `apps/server/services/telemetry.py` - Collection and sending logic
+- `apps/server/services/scheduler.py` - Background task scheduler
+- `apps/server/services/telemetry_receiver.py` - Receiver endpoint (production only)
+- `apps/server/models.py` - `TelemetrySettings`, `TelemetryLog`, and `TelemetrySubmission` models
 
 ### Dependencies
-- `APScheduler==3.10.4` - Background task scheduling
-- `requests==2.31.0` - HTTP client for sending telemetry
+- `APScheduler==3.11.3` - Background task scheduling
+- `requests>=2.34.2` - HTTP client for sending telemetry
 
 ### Database Tables
 - `telemetry_log` - Local submission tracking (all instances)
+- `telemetry_settings` - Singleton instance-wide consent state
 - `telemetry_submissions` - Received data (production server only)
 
 ## Contributing

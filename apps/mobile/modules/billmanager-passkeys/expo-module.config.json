@@ -1,0 +1,9 @@
+{
+  "platforms": ["apple", "android"],
+  "apple": {
+    "modules": ["BillManagerPasskeysModule"]
+  },
+  "android": {
+    "modules": ["com.brdweb.billmanager.passkeys.BillManagerPasskeysModule"]
+  }
+}

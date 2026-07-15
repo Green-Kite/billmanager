@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { useColorScheme } from 'react-native';
+import { Platform, useColorScheme } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
+import { resolveDarkMode } from './themeMode';
 
 const THEME_KEY = 'billmanager_theme';
 
@@ -79,17 +80,20 @@ const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const systemColorScheme = useColorScheme();
-  const [themeMode, setThemeModeState] = useState<ThemeMode>('dark');
-  const [isLoaded, setIsLoaded] = useState(false);
+  const designPreview = process.env.EXPO_PUBLIC_DESIGN_PREVIEW === '1';
+  const [themeMode, setThemeModeState] = useState<ThemeMode>(designPreview ? 'light' : 'system');
+  const [isLoaded, setIsLoaded] = useState(designPreview);
 
   // Load saved theme on mount
   useEffect(() => {
-    loadTheme();
-  }, []);
+    if (!designPreview) void loadTheme();
+  }, [designPreview]);
 
   const loadTheme = async () => {
     try {
-      const saved = await SecureStore.getItemAsync(THEME_KEY);
+      const saved = Platform.OS === 'web'
+        ? globalThis.localStorage?.getItem(THEME_KEY)
+        : await SecureStore.getItemAsync(THEME_KEY);
       if (saved && ['light', 'dark', 'system'].includes(saved)) {
         setThemeModeState(saved as ThemeMode);
       }
@@ -103,15 +107,15 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const setThemeMode = async (mode: ThemeMode) => {
     setThemeModeState(mode);
     try {
-      await SecureStore.setItemAsync(THEME_KEY, mode);
+      if (Platform.OS === 'web') globalThis.localStorage?.setItem(THEME_KEY, mode);
+      else await SecureStore.setItemAsync(THEME_KEY, mode);
     } catch (error) {
       console.error('Failed to save theme:', error);
     }
   };
 
   // Determine if we should use dark mode
-  const isDark = themeMode === 'dark' ||
-    (themeMode === 'system' && systemColorScheme === 'dark');
+  const isDark = resolveDarkMode(themeMode, systemColorScheme);
 
   const colors = isDark ? darkTheme : lightTheme;
 

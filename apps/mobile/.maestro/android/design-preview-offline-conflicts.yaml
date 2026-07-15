@@ -1,0 +1,40 @@
+appId: com.brdweb.billmanagermobile
+name: Android offline and conflict queue entry
+tags:
+  - android
+  - preview
+  - smoke
+---
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible:
+      text: Month remaining
+    timeout: 30000
+- tapOn:
+    text: ^Settings$
+- scrollUntilVisible:
+    element:
+      text: Offline storage
+    direction: DOWN
+    timeout: 20000
+    speed: 40
+    visibilityPercentage: 80
+- tapOn:
+    text: Offline storage
+- extendedWaitUntil:
+    visible:
+      text: Offline & conflicts
+    timeout: 10000
+- assertVisible:
+    text: Sync now
+- assertVisible:
+    text: No decisions needed
+- scrollUntilVisible:
+    element:
+      text: BillManager retries pending changes in order when the connection returns.
+    direction: DOWN
+    timeout: 10000
+    visibilityPercentage: 80
+- assertVisible:
+    text: BillManager retries pending changes in order when the connection returns.

@@ -5,6 +5,8 @@ import datetime
 import logging
 import json
 import calendar
+import re
+import uuid
 from datetime import date, timedelta
 from functools import wraps
 
@@ -45,6 +47,8 @@ from models import (
     TwoFAConfig,
     TwoFAChallenge,
     WebAuthnCredential,
+    ClientMutation,
+    TelemetrySettings,
     user_database_access,
 )
 from migration import migrate_sqlite_to_pg
@@ -83,15 +87,18 @@ from config import (
     is_saas,
     is_self_hosted,
     get_public_config,
+    get_mobile_capabilities,
+    SERVER_VERSION,
     OAUTH_PROVIDER_PUBLIC_INFO,
     get_oauth_provider_config,
     get_enabled_oauth_providers,
+    get_oauth_redirect_uris,
     OAUTH_AUTO_REGISTER,
     ENABLE_2FA,
     ENABLE_PASSKEYS,
     WEBAUTHN_RP_ID,
     WEBAUTHN_RP_NAME,
-    WEBAUTHN_ORIGIN,
+    WEBAUTHN_EXPECTED_ORIGINS,
 )
 from validation import (
     validate_email,
@@ -287,6 +294,376 @@ def check_bill_access(bill):
     return True
 
 
+def _error_response(code, message, status_code, details=None):
+    """Build the additive common API error shape without breaking legacy fields."""
+    payload = {"success": False, "error": message, "code": code}
+    if details is not None:
+        payload["details"] = details
+    response = jsonify(payload)
+    response.status_code = status_code
+    return response
+
+
+def _normalize_utc_naive(value):
+    """Normalize database/client timestamps for safe optimistic comparisons."""
+    if value is None:
+        return None
+    if value.tzinfo is not None:
+        return value.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+    return value
+
+
+def _isoformat_utc(value):
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=datetime.timezone.utc)
+    else:
+        value = value.astimezone(datetime.timezone.utc)
+    return value.isoformat().replace("+00:00", "Z")
+
+
+def _parse_base_updated_at(data):
+    # Omitting the field preserves compatibility with older clients that did
+    # not implement optimistic concurrency. Once a client sends the field, it
+    # must be a valid RFC3339 version token; null/empty/malformed values must
+    # never silently disable the stale-write check.
+    if "base_updated_at" not in data:
+        return None, None
+
+    parsed, timestamp_error = _parse_sync_timestamp(data.get("base_updated_at"))
+    if timestamp_error:
+        return None, _error_response(
+            "invalid_base_updated_at",
+            "base_updated_at must be an RFC3339 timestamp with a UTC offset",
+            400,
+        )
+    return parsed, None
+
+
+_RFC3339_TIMESTAMP = re.compile(
+    r"^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}"
+    r"(?:\.\d+)?(?:[Zz]|[+-]\d{2}:\d{2})$"
+)
+
+
+def _parse_sync_timestamp(value):
+    """Parse a required RFC3339 sync timestamp into naive UTC."""
+    if value in (None, ""):
+        return None, "missing_base_updated_at"
+    if not isinstance(value, str) or not _RFC3339_TIMESTAMP.fullmatch(value):
+        return None, "invalid_base_updated_at"
+    try:
+        normalized_value = value[:-1] + "+00:00" if value[-1] in "Zz" else value
+        parsed = datetime.datetime.fromisoformat(normalized_value)
+        return _normalize_utc_naive(parsed), None
+    except (ValueError, OverflowError):
+        return None, "invalid_base_updated_at"
+
+
+def _is_positive_integer_id(value):
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def _duplicate_sync_entity_ids(changes, deletions):
+    """Find existing entity IDs referenced more than once in one batch."""
+    counts = {}
+
+    for change in changes:
+        if not isinstance(change, dict):
+            continue
+        entity_id = change.get("id")
+        if not _is_positive_integer_id(entity_id):
+            continue
+        counts[entity_id] = counts.get(entity_id, 0) + 1
+
+    for deletion in deletions:
+        if not isinstance(deletion, dict):
+            continue
+        entity_id = deletion.get("id")
+        if not _is_positive_integer_id(entity_id):
+            continue
+        counts[entity_id] = counts.get(entity_id, 0) + 1
+
+    return {entity_id for entity_id, count in counts.items() if count > 1}
+
+
+def _sync_timestamp_conflicts(client_time, server_time):
+    """Treat the normalized timestamp as an exact server version token."""
+    normalized_client = _normalize_utc_naive(client_time)
+    normalized_server = _normalize_utc_naive(server_time)
+    return normalized_client != normalized_server
+
+
+def _bill_conflict_data(bill):
+    return {
+        "id": bill.id,
+        "database_id": bill.database_id,
+        "name": bill.name,
+        "amount": bill.amount,
+        "varies": bill.is_variable,
+        "frequency": bill.frequency,
+        "frequency_type": bill.frequency_type,
+        "frequency_config": bill.frequency_config,
+        "next_due": bill.due_date,
+        "auto_payment": bill.auto_pay,
+        "icon": bill.icon,
+        "type": bill.type,
+        "account": bill.account,
+        "category": bill.category,
+        "notes": bill.notes,
+        "reminder_enabled": bill.reminder_enabled,
+        "reminder_days": parse_reminder_days(bill.reminder_days),
+        "archived": bill.archived,
+        "last_updated": _isoformat_utc(bill.last_updated),
+    }
+
+
+def _payment_conflict_data(payment):
+    return {
+        "id": payment.id,
+        "bill_id": payment.bill_id,
+        "amount": payment.amount,
+        "payment_date": payment.payment_date,
+        "notes": payment.notes,
+        "updated_at": _isoformat_utc(payment.updated_at),
+    }
+
+
+def _share_conflict_data(share):
+    return {
+        "id": share.id,
+        "bill_id": share.bill_id,
+        "owner_user_id": share.owner_user_id,
+        "shared_with_user_id": share.shared_with_user_id,
+        "shared_with_identifier": share.shared_with_identifier,
+        "identifier_type": share.identifier_type,
+        "status": share.status,
+        "split_type": share.split_type,
+        "split_value": float(share.split_value)
+        if share.split_value is not None
+        else None,
+        "recipient_paid_date": _isoformat_utc(share.recipient_paid_date),
+        "updated_at": _isoformat_utc(share.updated_at),
+    }
+
+
+def _optimistic_conflict(data, entity, entity_id, server_updated_at, server_data):
+    base_updated_at, error = _parse_base_updated_at(data)
+    if error:
+        return error
+    normalized_server = _normalize_utc_naive(server_updated_at)
+    if (
+        base_updated_at is None
+        or (
+            normalized_server is not None
+            and base_updated_at == normalized_server
+        )
+    ):
+        return None
+
+    response = jsonify(
+        {
+            "success": False,
+            "error": "Resource has changed since it was last read",
+            "code": "resource_conflict",
+            "conflict": {
+                "entity": entity,
+                "entity_id": entity_id,
+                "reason": "modified",
+                "base_updated_at": data.get("base_updated_at"),
+                "server_updated_at": _isoformat_utc(server_updated_at),
+                "server": server_data,
+            },
+        }
+    )
+    response.status_code = 409
+    return response
+
+
+def _client_mutation_request_hash(data):
+    serialized = json.dumps(data, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _replay_client_mutation(record):
+    response = jsonify(json.loads(record.response_body))
+    response.status_code = record.response_status
+    response.headers["Idempotency-Replayed"] = "true"
+    return response
+
+
+def _mutation_replay_database_ids():
+    """Resolve database IDs the current request may use for an early replay.
+
+    A concrete ``X-Database`` value is an exact idempotency scope. ``_all_`` is
+    intentionally broader and returns ``None`` so the caller can search all
+    durable records owned by the authenticated user. That is required for
+    share-authorized payments whose bill database is not in the recipient's
+    normal database access list.
+    """
+    if g.jwt_db_name == "_all_":
+        return None
+
+    target_db = Database.query.filter_by(name=g.jwt_db_name).first()
+    return [target_db.id] if target_db else []
+
+
+def _replay_client_mutation_before_resource(data, operation):
+    """Replay a completed mutation before post-state resource checks.
+
+    Deletes remove the resource and bill moves change which ``X-Database``
+    value can access it. Looking up the durable replay record first preserves
+    retries while still enforcing the original user/database idempotency scope.
+    """
+    if "client_mutation_id" not in data:
+        return None
+    raw_mutation_id = data.get("client_mutation_id")
+    if not isinstance(raw_mutation_id, str):
+        return _error_response(
+            "invalid_client_mutation_id",
+            "client_mutation_id must be a UUID",
+            400,
+        )
+    try:
+        mutation_id = str(uuid.UUID(raw_mutation_id))
+    except ValueError:
+        return _error_response(
+            "invalid_client_mutation_id",
+            "client_mutation_id must be a UUID",
+            400,
+        )
+
+    database_ids = _mutation_replay_database_ids()
+    if database_ids == []:
+        return None
+
+    replay_query = ClientMutation.query.filter(
+        ClientMutation.user_id == g.jwt_user_id,
+        ClientMutation.client_mutation_id == mutation_id,
+    )
+    if database_ids is not None:
+        replay_query = replay_query.filter(
+            ClientMutation.database_id.in_(database_ids)
+        )
+    existing_records = replay_query.all()
+    if not existing_records:
+        return None
+
+    request_hash = _client_mutation_request_hash(data)
+    exact_match = next(
+        (
+            record
+            for record in existing_records
+            if record.operation == operation and record.request_hash == request_hash
+        ),
+        None,
+    )
+    if exact_match:
+        return _replay_client_mutation(exact_match)
+
+    # A UUID is scoped by user and database. Reusing it for a different
+    # operation or request body in any matching scope is always an error.
+    if existing_records:
+        return _error_response(
+            "client_mutation_id_reused",
+            "client_mutation_id was already used for a different request",
+            409,
+        )
+    return None
+
+
+def _prepare_client_mutation(data, database_id, operation):
+    """Validate an optional mutation UUID and replay a completed request."""
+    if "client_mutation_id" not in data:
+        return None, None
+    raw_mutation_id = data.get("client_mutation_id")
+    if not isinstance(raw_mutation_id, str):
+        return None, _error_response(
+            "invalid_client_mutation_id",
+            "client_mutation_id must be a UUID",
+            400,
+        )
+    try:
+        mutation_id = str(uuid.UUID(raw_mutation_id))
+    except ValueError:
+        return None, _error_response(
+            "invalid_client_mutation_id",
+            "client_mutation_id must be a UUID",
+            400,
+        )
+
+    request_hash = _client_mutation_request_hash(data)
+    existing = ClientMutation.query.filter_by(
+        user_id=g.jwt_user_id,
+        database_id=database_id,
+        client_mutation_id=mutation_id,
+    ).first()
+    if existing:
+        if existing.operation != operation or existing.request_hash != request_hash:
+            return None, _error_response(
+                "client_mutation_id_reused",
+                "client_mutation_id was already used for a different request",
+                409,
+            )
+        return None, _replay_client_mutation(existing)
+
+    return {
+        "user_id": g.jwt_user_id,
+        "database_id": database_id,
+        "client_mutation_id": mutation_id,
+        "operation": operation,
+        "request_hash": request_hash,
+    }, None
+
+
+def _commit_with_client_mutation(mutation, response_payload, status_code=200):
+    """Commit a mutation and replay the winner if a concurrent duplicate won."""
+    if mutation:
+        db.session.add(
+            ClientMutation(
+                **mutation,
+                response_status=status_code,
+                response_body=json.dumps(response_payload, sort_keys=True),
+            )
+        )
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        if mutation:
+            existing = ClientMutation.query.filter_by(
+                user_id=mutation["user_id"],
+                database_id=mutation["database_id"],
+                client_mutation_id=mutation["client_mutation_id"],
+            ).first()
+            if (
+                existing
+                and existing.operation == mutation["operation"]
+                and existing.request_hash == mutation["request_hash"]
+            ):
+                return _replay_client_mutation(existing)
+        raise
+    return None
+
+
+def _get_bill_for_mutation(bill_id, *, required=True):
+    """Lock a bill row so a timestamp check and write are atomic."""
+    query = Bill.query.filter_by(id=bill_id).with_for_update()
+    return query.first_or_404() if required else query.first()
+
+
+def _get_payment_for_mutation(payment_id, *, required=True):
+    """Lock a payment row so a timestamp check and write are atomic."""
+    query = Payment.query.filter_by(id=payment_id).with_for_update()
+    return query.first_or_404() if required else query.first()
+
+
+def _get_share_for_mutation(share_id):
+    """Lock a share row so a timestamp check and write are atomic."""
+    return BillShare.query.filter_by(id=share_id).with_for_update().first_or_404()
+
+
 def resolve_accessible_db_ids():
     """Resolve the list of accessible database IDs for the current JWT user.
 
@@ -390,6 +767,7 @@ def serialize_settlement_share(share, direction, db_name_lookup=None):
         else None,
         "created_at": share.created_at.isoformat() if share.created_at else None,
         "accepted_at": share.accepted_at.isoformat() if share.accepted_at else None,
+        "share_updated_at": _isoformat_utc(share.updated_at),
     }
 
 
@@ -875,6 +1253,22 @@ def forecast_bill_occurrences(bill, amount, start_date, end_date, source, db_nam
     return occurrences
 
 
+def _record_login_if_due(user, now=None):
+    """Record a successful login at most once per rolling 24-hour period."""
+    current = now or datetime.datetime.now(datetime.timezone.utc)
+    current_naive = current.replace(tzinfo=None) if current.tzinfo else current
+    previous = user.last_login_at
+    if previous:
+        previous_naive = (
+            previous.replace(tzinfo=None) if previous.tzinfo else previous
+        )
+        if current_naive - previous_naive < datetime.timedelta(days=1):
+            return False
+
+    user.last_login_at = current_naive
+    return True
+
+
 # --- API v2 Routes (JWT Auth for Mobile) ---
 
 
@@ -883,7 +1277,7 @@ def forecast_bill_occurrences(bill, amount, start_date, end_date, source, db_nam
 def jwt_login():
     """JWT login endpoint for mobile apps."""
     data = request.get_json(force=True, silent=True)
-    if not data:
+    if not isinstance(data, dict) or not data:
         return jsonify({"success": False, "error": "Invalid JSON body"}), 400
 
     username = data.get("username")
@@ -954,6 +1348,9 @@ def jwt_login():
                 "twofa_methods": methods,
             }
         ), 403
+
+    if _record_login_if_due(user):
+        db.session.commit()
 
     # Create tokens
     access_token = create_access_token(user.id, user.role)
@@ -2009,6 +2406,7 @@ def jwt_get_bills():
             "share_count": share_counts.get(bill.id, 0),
             "database_id": bill.database_id,
             "database_name": db_name_lookup.get(bill.database_id, "Unknown"),
+            "last_updated": _isoformat_utc(bill.last_updated),
         }
         if bill.is_variable:
             avg = (
@@ -2069,6 +2467,7 @@ def jwt_get_bills():
             "database_name": database_owner.display_name
             if database_owner
             else "Unknown",
+            "last_updated": _isoformat_utc(bill.last_updated),
         }
         if bill.is_variable:
             avg = (
@@ -2123,6 +2522,12 @@ def jwt_create_bill():
         target_db = Database.query.filter_by(name=g.jwt_db_name).first()
         if not target_db:
             return jsonify({"success": False, "error": "Database not found"}), 404
+
+    mutation, mutation_response = _prepare_client_mutation(
+        data, target_db.id, "bills.create"
+    )
+    if mutation_response:
+        return mutation_response
 
     # Validate bill name
     is_valid, error = validate_bill_name(data.get("name", ""))
@@ -2180,11 +2585,21 @@ def jwt_create_bill():
         archived=False,
     )
     db.session.add(new_bill)
-    db.session.commit()
+    db.session.flush()
 
-    return jsonify(
-        {"success": True, "data": {"id": new_bill.id, "message": "Bill created"}}
-    ), 201
+    response_payload = {
+        "success": True,
+        "data": {
+            "id": new_bill.id,
+            "message": "Bill created",
+            "last_updated": _isoformat_utc(new_bill.last_updated),
+        },
+    }
+    replay = _commit_with_client_mutation(mutation, response_payload, 201)
+    if replay:
+        return replay
+
+    return jsonify(response_payload), 201
 
 
 @api_v2_bp.route("/bills/<int:bill_id>", methods=["GET"])
@@ -2229,6 +2644,7 @@ def jwt_get_bill(bill_id):
         "reminder_enabled": bill.reminder_enabled,
         "reminder_days": parse_reminder_days(bill.reminder_days),
         "archived": bill.archived,
+        "last_updated": _isoformat_utc(bill.last_updated),
         "database_id": bill.database_id,
         "database_name": database.display_name if database else "Unknown",
     }
@@ -2270,7 +2686,24 @@ def jwt_update_bill(bill_id):
     if not g.jwt_db_name:
         return jsonify({"success": False, "error": "X-Database header required"}), 400
 
-    bill = db.get_or_404(Bill, bill_id)
+    data = request.get_json(force=True, silent=True)
+    if not data:
+        return jsonify({"success": False, "error": "Invalid JSON body"}), 400
+
+    operation = f"bills.update:{bill_id}"
+    replay = _replay_client_mutation_before_resource(data, operation)
+    if replay:
+        return replay
+
+    bill = _get_bill_for_mutation(bill_id)
+
+    # An identical request may have completed while this request waited for the
+    # bill row lock. Check again before the move's new database state can reject
+    # the original source-database header.
+    replay = _replay_client_mutation_before_resource(data, operation)
+    if replay:
+        return replay
+
     user = db.session.get(User, g.jwt_user_id)
 
     # Validate user has access to the bill's current database
@@ -2281,26 +2714,42 @@ def jwt_update_bill(bill_id):
     # For non-_all_ mode, also verify X-Database header matches bill's database
     if g.jwt_db_name != "_all_":
         target_db = Database.query.filter_by(name=g.jwt_db_name).first()
-        if bill.database_id != target_db.id:
+        if not target_db or bill.database_id != target_db.id:
             return jsonify({"success": False, "error": "Access denied"}), 403
 
-    data = request.get_json(force=True, silent=True)
-    if not data:
-        return jsonify({"success": False, "error": "Invalid JSON body"}), 400
-
-    # Handle moving bill to a different database
+    destination_db = None
     if "database_id" in data:
-        new_db_id = data["database_id"]
-        new_db = db.session.get(Database, new_db_id)
-        if not new_db:
+        destination_db = db.session.get(Database, data["database_id"])
+        if not destination_db:
             return jsonify(
                 {"success": False, "error": "Target database not found"}
             ), 404
-        if new_db not in user.accessible_databases:
+        if destination_db not in user.accessible_databases:
             return jsonify(
                 {"success": False, "error": "Access denied to target database"}
             ), 403
-        bill.database_id = new_db_id
+
+    mutation, mutation_response = _prepare_client_mutation(
+        data,
+        bill.database_id,
+        operation,
+    )
+    if mutation_response:
+        return mutation_response
+
+    conflict = _optimistic_conflict(
+        data,
+        "bill",
+        bill.id,
+        bill.last_updated,
+        _bill_conflict_data(bill),
+    )
+    if conflict:
+        return conflict
+
+    # Handle moving bill to a different database
+    if destination_db:
+        bill.database_id = destination_db.id
 
     if "name" in data:
         bill.name = data["name"]
@@ -2344,8 +2793,19 @@ def jwt_update_bill(bill_id):
         except ValueError:
             return jsonify({"success": False, "error": INVALID_REMINDER_DAYS_ERROR}), 400
 
-    db.session.commit()
-    return jsonify({"success": True, "data": {"message": "Bill updated"}})
+    db.session.flush()
+    response_payload = {
+        "success": True,
+        "data": {
+            "id": bill.id,
+            "message": "Bill updated",
+            "last_updated": _isoformat_utc(bill.last_updated),
+        },
+    }
+    replay = _commit_with_client_mutation(mutation, response_payload)
+    if replay:
+        return replay
+    return jsonify(response_payload)
 
 
 @api_v2_bp.route("/bills/<int:bill_id>", methods=["DELETE"])
@@ -2356,15 +2816,42 @@ def jwt_archive_bill(bill_id):
     if not g.jwt_db_name:
         return jsonify({"success": False, "error": "X-Database header required"}), 400
 
-    bill = db.get_or_404(Bill, bill_id)
+    bill = _get_bill_for_mutation(bill_id)
 
     access = check_bill_access(bill)
     if access is not True:
         return access
 
+    data = request.get_json(silent=True) or {}
+    mutation, mutation_response = _prepare_client_mutation(
+        data, bill.database_id, f"bills.archive:{bill_id}"
+    )
+    if mutation_response:
+        return mutation_response
+    conflict = _optimistic_conflict(
+        data,
+        "bill",
+        bill.id,
+        bill.last_updated,
+        _bill_conflict_data(bill),
+    )
+    if conflict:
+        return conflict
+
     bill.archived = True
-    db.session.commit()
-    return jsonify({"success": True, "data": {"message": "Bill archived"}})
+    db.session.flush()
+    response_payload = {
+        "success": True,
+        "data": {
+            "id": bill.id,
+            "message": "Bill archived",
+            "last_updated": _isoformat_utc(bill.last_updated),
+        },
+    }
+    replay = _commit_with_client_mutation(mutation, response_payload)
+    if replay:
+        return replay
+    return jsonify(response_payload)
 
 
 @api_v2_bp.route("/bills/<int:bill_id>/unarchive", methods=["POST"])
@@ -2375,15 +2862,42 @@ def jwt_unarchive_bill(bill_id):
     if not g.jwt_db_name:
         return jsonify({"success": False, "error": "X-Database header required"}), 400
 
-    bill = db.get_or_404(Bill, bill_id)
+    bill = _get_bill_for_mutation(bill_id)
 
     access = check_bill_access(bill)
     if access is not True:
         return access
 
+    data = request.get_json(silent=True) or {}
+    mutation, mutation_response = _prepare_client_mutation(
+        data, bill.database_id, f"bills.unarchive:{bill_id}"
+    )
+    if mutation_response:
+        return mutation_response
+    conflict = _optimistic_conflict(
+        data,
+        "bill",
+        bill.id,
+        bill.last_updated,
+        _bill_conflict_data(bill),
+    )
+    if conflict:
+        return conflict
+
     bill.archived = False
-    db.session.commit()
-    return jsonify({"success": True, "data": {"message": "Bill unarchived"}})
+    db.session.flush()
+    response_payload = {
+        "success": True,
+        "data": {
+            "id": bill.id,
+            "message": "Bill unarchived",
+            "last_updated": _isoformat_utc(bill.last_updated),
+        },
+    }
+    replay = _commit_with_client_mutation(mutation, response_payload)
+    if replay:
+        return replay
+    return jsonify(response_payload)
 
 
 @api_v2_bp.route("/bills/<int:bill_id>/permanent", methods=["DELETE"])
@@ -2394,15 +2908,50 @@ def jwt_delete_bill_permanent(bill_id):
     if not g.jwt_db_name:
         return jsonify({"success": False, "error": "X-Database header required"}), 400
 
-    bill = db.get_or_404(Bill, bill_id)
+    data = request.get_json(silent=True) or {}
+    replay = _replay_client_mutation_before_resource(
+        data, f"bills.delete:{bill_id}"
+    )
+    if replay:
+        return replay
+
+    bill = _get_bill_for_mutation(bill_id, required=False)
+    if not bill:
+        replay = _replay_client_mutation_before_resource(
+            data, f"bills.delete:{bill_id}"
+        )
+        if replay:
+            return replay
+        return _error_response("not_found", "Bill not found", 404)
 
     access = check_bill_access(bill)
     if access is not True:
         return access
 
+    mutation, mutation_response = _prepare_client_mutation(
+        data, bill.database_id, f"bills.delete:{bill_id}"
+    )
+    if mutation_response:
+        return mutation_response
+    conflict = _optimistic_conflict(
+        data,
+        "bill",
+        bill.id,
+        bill.last_updated,
+        _bill_conflict_data(bill),
+    )
+    if conflict:
+        return conflict
+
     db.session.delete(bill)
-    db.session.commit()
-    return jsonify({"success": True, "data": {"message": "Bill permanently deleted"}})
+    response_payload = {
+        "success": True,
+        "data": {"id": bill_id, "message": "Bill permanently deleted"},
+    }
+    replay = _commit_with_client_mutation(mutation, response_payload)
+    if replay:
+        return replay
+    return jsonify(response_payload)
 
 
 @api_v2_bp.route("/bills/<int:bill_id>/pay", methods=["POST"])
@@ -2413,7 +2962,7 @@ def jwt_pay_bill(bill_id):
     if not g.jwt_db_name:
         return jsonify({"success": False, "error": "X-Database header required"}), 400
 
-    bill = db.get_or_404(Bill, bill_id)
+    bill = _get_bill_for_mutation(bill_id)
     user = db.session.get(User, g.jwt_user_id)
 
     access = check_bill_access(bill)
@@ -2423,6 +2972,21 @@ def jwt_pay_bill(bill_id):
     data = request.get_json(force=True, silent=True)
     if not data:
         return jsonify({"success": False, "error": "Invalid JSON body"}), 400
+
+    mutation, mutation_response = _prepare_client_mutation(
+        data, bill.database_id, f"bills.pay:{bill_id}"
+    )
+    if mutation_response:
+        return mutation_response
+    conflict = _optimistic_conflict(
+        data,
+        "bill",
+        bill.id,
+        bill.last_updated,
+        _bill_conflict_data(bill),
+    )
+    if conflict:
+        return conflict
 
     payment = Payment(
         bill_id=bill.id,
@@ -2442,10 +3006,20 @@ def jwt_pay_bill(bill_id):
         bill.due_date = next_due.isoformat()
         bill.archived = False
 
-    db.session.commit()
-    return jsonify(
-        {"success": True, "data": {"id": payment.id, "message": "Payment recorded"}}
-    )
+    db.session.flush()
+    response_payload = {
+        "success": True,
+        "data": {
+            "id": payment.id,
+            "message": "Payment recorded",
+            "updated_at": _isoformat_utc(payment.updated_at),
+            "bill_last_updated": _isoformat_utc(bill.last_updated),
+        },
+    }
+    replay = _commit_with_client_mutation(mutation, response_payload)
+    if replay:
+        return replay
+    return jsonify(response_payload)
 
 
 @api_v2_bp.route("/bills/<int:bill_id>/payments", methods=["GET"])
@@ -2482,6 +3056,7 @@ def jwt_get_bill_payments(bill_id):
             "payment_date": p.payment_date,
             "notes": p.notes,
             "is_share_payment": p.share_id is not None,
+            "updated_at": _isoformat_utc(p.updated_at),
         }
         for p in payments
     ]
@@ -2607,6 +3182,7 @@ def jwt_get_all_payments():
                 "is_received_payment": is_received_from_sharee,  # True = money received from sharee
                 "database_id": p.bill.database_id,
                 "database_name": db_name_lookup.get(p.bill.database_id, "Unknown"),
+                "updated_at": _isoformat_utc(p.updated_at),
             }
         )
 
@@ -2639,6 +3215,7 @@ def jwt_get_all_payments():
                 "is_received_payment": False,  # False = money paid out by sharee
                 "database_id": p.bill.database_id,
                 "database_name": shared_db_name,
+                "updated_at": _isoformat_utc(p.updated_at),
             }
         )
 
@@ -2656,7 +3233,7 @@ def jwt_update_payment(payment_id):
     if not g.jwt_db_name:
         return jsonify({"success": False, "error": "X-Database header required"}), 400
 
-    payment = db.get_or_404(Payment, payment_id)
+    payment = _get_payment_for_mutation(payment_id)
 
     # Check access permissions
     if payment.share_id:
@@ -2676,6 +3253,21 @@ def jwt_update_payment(payment_id):
     if not data:
         return jsonify({"success": False, "error": "Invalid JSON body"}), 400
 
+    mutation, mutation_response = _prepare_client_mutation(
+        data, payment.bill.database_id, f"payments.update:{payment_id}"
+    )
+    if mutation_response:
+        return mutation_response
+    conflict = _optimistic_conflict(
+        data,
+        "payment",
+        payment.id,
+        payment.updated_at,
+        _payment_conflict_data(payment),
+    )
+    if conflict:
+        return conflict
+
     if "amount" in data:
         payment.amount = data["amount"]
     if "payment_date" in data:
@@ -2683,8 +3275,19 @@ def jwt_update_payment(payment_id):
     if "notes" in data:
         payment.notes = data["notes"]
 
-    db.session.commit()
-    return jsonify({"success": True, "data": {"message": "Payment updated"}})
+    db.session.flush()
+    response_payload = {
+        "success": True,
+        "data": {
+            "id": payment.id,
+            "message": "Payment updated",
+            "updated_at": _isoformat_utc(payment.updated_at),
+        },
+    }
+    replay = _commit_with_client_mutation(mutation, response_payload)
+    if replay:
+        return replay
+    return jsonify(response_payload)
 
 
 @api_v2_bp.route("/payments/<int:payment_id>", methods=["DELETE"])
@@ -2695,7 +3298,21 @@ def jwt_delete_payment(payment_id):
     if not g.jwt_db_name:
         return jsonify({"success": False, "error": "X-Database header required"}), 400
 
-    payment = db.get_or_404(Payment, payment_id)
+    data = request.get_json(silent=True) or {}
+    replay = _replay_client_mutation_before_resource(
+        data, f"payments.delete:{payment_id}"
+    )
+    if replay:
+        return replay
+
+    payment = _get_payment_for_mutation(payment_id, required=False)
+    if not payment:
+        replay = _replay_client_mutation_before_resource(
+            data, f"payments.delete:{payment_id}"
+        )
+        if replay:
+            return replay
+        return _error_response("not_found", "Payment not found", 404)
 
     # Check access permissions
     if payment.share_id:
@@ -2705,17 +3322,39 @@ def jwt_delete_payment(payment_id):
             return jsonify(
                 {"success": False, "error": "Cannot delete payments made by others"}
             ), 403
-        # Also clear the recipient_paid_date on the share since we're deleting the payment
-        share.recipient_paid_date = None
     else:
         # Regular payment - must own the bill's database
         access = check_bill_access(payment.bill)
         if access is not True:
             return access
 
+    mutation, mutation_response = _prepare_client_mutation(
+        data, payment.bill.database_id, f"payments.delete:{payment_id}"
+    )
+    if mutation_response:
+        return mutation_response
+    conflict = _optimistic_conflict(
+        data,
+        "payment",
+        payment.id,
+        payment.updated_at,
+        _payment_conflict_data(payment),
+    )
+    if conflict:
+        return conflict
+
+    if payment.share_id:
+        # Also clear the recipient_paid_date on the share since we're deleting the payment.
+        share.recipient_paid_date = None
     db.session.delete(payment)
-    db.session.commit()
-    return jsonify({"success": True, "data": {"message": "Payment deleted"}})
+    response_payload = {
+        "success": True,
+        "data": {"id": payment_id, "message": "Payment deleted"},
+    }
+    replay = _commit_with_client_mutation(mutation, response_payload)
+    if replay:
+        return replay
+    return jsonify(response_payload)
 
 
 # =============================================================================
@@ -2741,11 +3380,17 @@ def jwt_share_bill(bill_id):
         return jsonify({"success": False, "error": "Invalid JSON body"}), 400
 
     # Validate bill ownership
-    bill = db.get_or_404(Bill, bill_id)
+    bill = _get_bill_for_mutation(bill_id)
 
     access = check_bill_access(bill)
     if access is not True:
         return access
+
+    mutation, mutation_response = _prepare_client_mutation(
+        data, bill.database_id, f"shares.create:{bill_id}"
+    )
+    if mutation_response:
+        return mutation_response
 
     # Get share parameters
     identifier = data.get("identifier", "").strip().lower()  # username or email
@@ -2844,9 +3489,8 @@ def jwt_share_bill(bill_id):
 
     try:
         db.session.add(share)
-        db.session.commit()
+        db.session.flush()
 
-        # Audit log: Share created
         ShareAuditLog.log_action(
             action="created",
             bill_id=bill_id,
@@ -2860,7 +3504,31 @@ def jwt_share_bill(bill_id):
             },
             ip_address=request.remote_addr,
             user_agent=request.headers.get("User-Agent"),
+            commit=False,
         )
+
+        response_payload = {
+            "success": True,
+            "data": {
+                "id": share.id,
+                "shared_with_identifier": share.shared_with_identifier,
+                "identifier_type": share.identifier_type,
+                "status": share.status,
+                "split_type": share.split_type,
+                "split_value": float(share.split_value)
+                if share.split_value is not None
+                else None,
+                "created_at": _isoformat_utc(share.created_at),
+                "accepted_at": _isoformat_utc(share.accepted_at),
+                "updated_at": _isoformat_utc(share.updated_at),
+                "message": "Share created"
+                if status == "accepted"
+                else "Invitation sent",
+            },
+        }
+        replay = _commit_with_client_mutation(mutation, response_payload, 201)
+        if replay:
+            return replay
     except Exception as e:
         db.session.rollback()
         logger.error(f"Failed to create bill share: {e}")
@@ -2878,28 +3546,7 @@ def jwt_share_bill(bill_id):
         except Exception as e:
             logger.warning(f"Failed to send share invitation email: {e}")
 
-    return jsonify(
-        {
-            "success": True,
-            "data": {
-                "id": share.id,
-                "shared_with_identifier": share.shared_with_identifier,
-                "identifier_type": share.identifier_type,
-                "status": share.status,
-                "split_type": share.split_type,
-                "split_value": share.split_value,
-                "created_at": share.created_at.isoformat()
-                if share.created_at
-                else None,
-                "accepted_at": share.accepted_at.isoformat()
-                if share.accepted_at
-                else None,
-                "message": "Share created"
-                if status == "accepted"
-                else "Invitation sent",
-            },
-        }
-    ), 201
+    return jsonify(response_payload), 201
 
 
 @api_v2_bp.route("/bills/<int:bill_id>/shares", methods=["GET"])
@@ -2936,6 +3583,7 @@ def jwt_get_bill_shares(bill_id):
             "split_value": s.split_value,
             "created_at": s.created_at.isoformat() if s.created_at else None,
             "accepted_at": s.accepted_at.isoformat() if s.accepted_at else None,
+            "updated_at": _isoformat_utc(s.updated_at),
             "recipient_paid_date": s.recipient_paid_date.isoformat()
             if s.recipient_paid_date
             else None,
@@ -2951,15 +3599,42 @@ def jwt_get_bill_shares(bill_id):
 @jwt_required
 def jwt_revoke_share(share_id):
     """Revoke a bill share (owner only)."""
-    share = db.get_or_404(BillShare, share_id)
+    data = request.get_json(silent=True) or {}
+    share = _get_share_for_mutation(share_id)
 
     if share.owner_user_id != g.jwt_user_id:
         return jsonify({"success": False, "error": "Access denied"}), 403
 
-    share.status = "revoked"
-    db.session.commit()
+    mutation, mutation_response = _prepare_client_mutation(
+        data, share.bill.database_id, f"shares.revoke:{share_id}"
+    )
+    if mutation_response:
+        return mutation_response
+    conflict = _optimistic_conflict(
+        data,
+        "share",
+        share.id,
+        share.updated_at,
+        _share_conflict_data(share),
+    )
+    if conflict:
+        return conflict
 
-    return jsonify({"success": True, "data": {"message": "Share revoked"}})
+    share.status = "revoked"
+    db.session.flush()
+
+    response_payload = {
+        "success": True,
+        "data": {
+            "id": share.id,
+            "message": "Share revoked",
+            "updated_at": _isoformat_utc(share.updated_at),
+        },
+    }
+    replay = _commit_with_client_mutation(mutation, response_payload)
+    if replay:
+        return replay
+    return jsonify(response_payload)
 
 
 @api_v2_bp.route("/settlements", methods=["GET"])
@@ -3142,6 +3817,7 @@ def jwt_get_shared_bills():
                 "created_at": share.created_at.isoformat()
                 if share.created_at
                 else None,
+                "updated_at": _isoformat_utc(share.updated_at),
             }
         )
 
@@ -3189,6 +3865,7 @@ def jwt_get_pending_shares():
                 "expires_at": share.expires_at.isoformat()
                 if share.expires_at
                 else None,
+                "updated_at": _isoformat_utc(share.updated_at),
             }
         )
 
@@ -3200,7 +3877,8 @@ def jwt_get_pending_shares():
 @jwt_required
 def jwt_accept_share(share_id):
     """Accept a pending share invitation."""
-    share = db.get_or_404(BillShare, share_id)
+    data = request.get_json(silent=True) or {}
+    share = _get_share_for_mutation(share_id)
 
     # Verify the current user can accept this share
     current_user = db.session.get(User, g.jwt_user_id)
@@ -3218,6 +3896,21 @@ def jwt_accept_share(share_id):
         ):
             return jsonify({"success": False, "error": "Access denied"}), 403
 
+    mutation, mutation_response = _prepare_client_mutation(
+        data, share.bill.database_id, f"shares.accept:{share_id}"
+    )
+    if mutation_response:
+        return mutation_response
+    conflict = _optimistic_conflict(
+        data,
+        "share",
+        share.id,
+        share.updated_at,
+        _share_conflict_data(share),
+    )
+    if conflict:
+        return conflict
+
     if share.status != "pending":
         return jsonify(
             {"success": False, "error": f"Share is already {share.status}"}
@@ -3230,9 +3923,8 @@ def jwt_accept_share(share_id):
     share.status = "accepted"
     share.shared_with_user_id = g.jwt_user_id
     share.accepted_at = datetime.datetime.now(datetime.timezone.utc)
-    db.session.commit()
+    db.session.flush()
 
-    # Audit log: Share accepted
     ShareAuditLog.log_action(
         action="accepted",
         bill_id=share.bill_id,
@@ -3241,9 +3933,21 @@ def jwt_accept_share(share_id):
         affected_user_id=share.owner_user_id,
         ip_address=request.remote_addr,
         user_agent=request.headers.get("User-Agent"),
+        commit=False,
     )
 
-    return jsonify({"success": True, "data": {"message": "Share accepted"}})
+    response_payload = {
+        "success": True,
+        "data": {
+            "id": share.id,
+            "message": "Share accepted",
+            "updated_at": _isoformat_utc(share.updated_at),
+        },
+    }
+    replay = _commit_with_client_mutation(mutation, response_payload)
+    if replay:
+        return replay
+    return jsonify(response_payload)
 
 
 @api_v2_bp.route("/shares/<int:share_id>/decline", methods=["POST"])
@@ -3251,7 +3955,8 @@ def jwt_accept_share(share_id):
 @jwt_required
 def jwt_decline_share(share_id):
     """Decline a pending share invitation."""
-    share = db.get_or_404(BillShare, share_id)
+    data = request.get_json(silent=True) or {}
+    share = _get_share_for_mutation(share_id)
 
     # Verify the current user can decline this share
     current_user = db.session.get(User, g.jwt_user_id)
@@ -3269,15 +3974,29 @@ def jwt_decline_share(share_id):
         ):
             return jsonify({"success": False, "error": "Access denied"}), 403
 
+    mutation, mutation_response = _prepare_client_mutation(
+        data, share.bill.database_id, f"shares.decline:{share_id}"
+    )
+    if mutation_response:
+        return mutation_response
+    conflict = _optimistic_conflict(
+        data,
+        "share",
+        share.id,
+        share.updated_at,
+        _share_conflict_data(share),
+    )
+    if conflict:
+        return conflict
+
     if share.status != "pending":
         return jsonify(
             {"success": False, "error": f"Share is already {share.status}"}
         ), 400
 
     share.status = "declined"
-    db.session.commit()
+    db.session.flush()
 
-    # Audit log: Share declined
     ShareAuditLog.log_action(
         action="declined",
         bill_id=share.bill_id,
@@ -3286,9 +4005,21 @@ def jwt_decline_share(share_id):
         affected_user_id=share.owner_user_id,
         ip_address=request.remote_addr,
         user_agent=request.headers.get("User-Agent"),
+        commit=False,
     )
 
-    return jsonify({"success": True, "data": {"message": "Share declined"}})
+    response_payload = {
+        "success": True,
+        "data": {
+            "id": share.id,
+            "message": "Share declined",
+            "updated_at": _isoformat_utc(share.updated_at),
+        },
+    }
+    replay = _commit_with_client_mutation(mutation, response_payload)
+    if replay:
+        return replay
+    return jsonify(response_payload)
 
 
 @api_v2_bp.route("/share-info", methods=["GET"])
@@ -3326,6 +4057,7 @@ def jwt_get_share_info():
                 "expires_at": share.expires_at.isoformat()
                 if share.expires_at
                 else None,
+                "updated_at": _isoformat_utc(share.updated_at),
             },
         }
     )
@@ -3345,14 +4077,7 @@ def jwt_accept_share_by_token():
         return jsonify({"success": False, "error": "Invalid invitation"}), 404
     if not share.verify_invite_token(data["token"]):
         return jsonify({"success": False, "error": "Invalid invitation"}), 404
-
-    if share.status != "pending":
-        return jsonify(
-            {"success": False, "error": f"Invitation already {share.status}"}
-        ), 400
-
-    if share.is_expired:
-        return jsonify({"success": False, "error": "Invitation has expired"}), 400
+    share = _get_share_for_mutation(share.id)
 
     # Verify the current user matches the invitation
     current_user = db.session.get(User, g.jwt_user_id)
@@ -3375,15 +4100,47 @@ def jwt_accept_share_by_token():
         if not share.shared_with_user_id or share.shared_with_user_id != g.jwt_user_id:
             return jsonify({"success": False, "error": "Access denied"}), 403
 
+    mutation, mutation_response = _prepare_client_mutation(
+        data, share.bill.database_id, f"shares.accept-token:{share.id}"
+    )
+    if mutation_response:
+        return mutation_response
+    conflict = _optimistic_conflict(
+        data,
+        "share",
+        share.id,
+        share.updated_at,
+        _share_conflict_data(share),
+    )
+    if conflict:
+        return conflict
+
+    if share.status != "pending":
+        return jsonify(
+            {"success": False, "error": f"Invitation already {share.status}"}
+        ), 400
+
+    if share.is_expired:
+        return jsonify({"success": False, "error": "Invitation has expired"}), 400
+
     # Accept the share
     share.status = "accepted"
     share.shared_with_user_id = g.jwt_user_id
     share.accepted_at = datetime.datetime.now(datetime.timezone.utc)
-    db.session.commit()
+    db.session.flush()
 
-    return jsonify(
-        {"success": True, "data": {"message": "Share accepted", "share_id": share.id}}
-    )
+    response_payload = {
+        "success": True,
+        "data": {
+            "message": "Share accepted",
+            "share_id": share.id,
+            "updated_at": _isoformat_utc(share.updated_at),
+        },
+    }
+    replay = _commit_with_client_mutation(mutation, response_payload)
+    if replay:
+        return replay
+    return jsonify(response_payload)
 
 
 @api_v2_bp.route("/shares/<int:share_id>", methods=["PUT"])
@@ -3391,7 +4148,7 @@ def jwt_accept_share_by_token():
 @jwt_required
 def jwt_update_share(share_id):
     """Update share split configuration (owner only)."""
-    share = db.get_or_404(BillShare, share_id)
+    share = _get_share_for_mutation(share_id)
 
     if share.owner_user_id != g.jwt_user_id:
         return jsonify({"success": False, "error": "Access denied"}), 403
@@ -3399,6 +4156,21 @@ def jwt_update_share(share_id):
     data = request.get_json(force=True, silent=True)
     if not data:
         return jsonify({"success": False, "error": "Invalid JSON body"}), 400
+
+    mutation, mutation_response = _prepare_client_mutation(
+        data, share.bill.database_id, f"shares.update:{share_id}"
+    )
+    if mutation_response:
+        return mutation_response
+    conflict = _optimistic_conflict(
+        data,
+        "share",
+        share.id,
+        share.updated_at,
+        _share_conflict_data(share),
+    )
+    if conflict:
+        return conflict
 
     # Update split configuration
     if "split_type" in data:
@@ -3421,9 +4193,8 @@ def jwt_update_share(share_id):
                 ), 400
         share.split_value = split_value
 
-    db.session.commit()
+    db.session.flush()
 
-    # Audit log: Share split configuration updated
     ShareAuditLog.log_action(
         action="updated",
         bill_id=share.bill_id,
@@ -3433,9 +4204,21 @@ def jwt_update_share(share_id):
         metadata={"split_type": share.split_type, "split_value": share.split_value},
         ip_address=request.remote_addr,
         user_agent=request.headers.get("User-Agent"),
+        commit=False,
     )
 
-    return jsonify({"success": True, "data": {"message": "Share updated"}})
+    response_payload = {
+        "success": True,
+        "data": {
+            "id": share.id,
+            "message": "Share updated",
+            "updated_at": _isoformat_utc(share.updated_at),
+        },
+    }
+    replay = _commit_with_client_mutation(mutation, response_payload)
+    if replay:
+        return replay
+    return jsonify(response_payload)
 
 
 @api_v2_bp.route("/shares/<int:share_id>/leave", methods=["POST"])
@@ -3443,18 +4226,33 @@ def jwt_update_share(share_id):
 @jwt_required
 def jwt_leave_share(share_id):
     """Leave a shared bill (recipient only)."""
-    share = db.get_or_404(BillShare, share_id)
+    data = request.get_json(silent=True) or {}
+    share = _get_share_for_mutation(share_id)
 
     if share.shared_with_user_id != g.jwt_user_id:
         return jsonify({"success": False, "error": "Access denied"}), 403
+
+    mutation, mutation_response = _prepare_client_mutation(
+        data, share.bill.database_id, f"shares.leave:{share_id}"
+    )
+    if mutation_response:
+        return mutation_response
+    conflict = _optimistic_conflict(
+        data,
+        "share",
+        share.id,
+        share.updated_at,
+        _share_conflict_data(share),
+    )
+    if conflict:
+        return conflict
 
     if share.status != "accepted":
         return jsonify({"success": False, "error": "Share is not active"}), 400
 
     share.status = "revoked"
-    db.session.commit()
+    db.session.flush()
 
-    # Audit log: Share revoked (recipient left)
     ShareAuditLog.log_action(
         action="revoked",
         bill_id=share.bill_id,
@@ -3463,9 +4261,21 @@ def jwt_leave_share(share_id):
         affected_user_id=share.owner_user_id,
         ip_address=request.remote_addr,
         user_agent=request.headers.get("User-Agent"),
+        commit=False,
     )
 
-    return jsonify({"success": True, "data": {"message": "Left shared bill"}})
+    response_payload = {
+        "success": True,
+        "data": {
+            "id": share.id,
+            "message": "Left shared bill",
+            "updated_at": _isoformat_utc(share.updated_at),
+        },
+    }
+    replay = _commit_with_client_mutation(mutation, response_payload)
+    if replay:
+        return replay
+    return jsonify(response_payload)
 
 
 @api_v2_bp.route("/shares/<int:share_id>/mark-paid", methods=["POST"])
@@ -3473,11 +4283,27 @@ def jwt_leave_share(share_id):
 @jwt_required
 def jwt_mark_share_paid(share_id):
     """Mark recipient's portion of shared bill as paid and create payment record."""
-    share = db.get_or_404(BillShare, share_id)
+    data = request.get_json(silent=True) or {}
+    share = _get_share_for_mutation(share_id)
 
     # Only the share recipient can mark their portion as paid
     if share.shared_with_user_id != g.jwt_user_id:
         return jsonify({"success": False, "error": "Access denied"}), 403
+
+    mutation, mutation_response = _prepare_client_mutation(
+        data, share.bill.database_id, f"settlements.toggle-paid:{share_id}"
+    )
+    if mutation_response:
+        return mutation_response
+    conflict = _optimistic_conflict(
+        data,
+        "share",
+        share.id,
+        share.updated_at,
+        _share_conflict_data(share),
+    )
+    if conflict:
+        return conflict
 
     if share.status != "accepted":
         return jsonify({"success": False, "error": "Share is not active"}), 400
@@ -3515,20 +4341,21 @@ def jwt_mark_share_paid(share_id):
         db.session.flush()  # Get the payment ID
         payment_id = payment.id
 
-    db.session.commit()
-
-    return jsonify(
-        {
-            "success": True,
-            "data": {
-                "message": message,
-                "recipient_paid_date": share.recipient_paid_date.isoformat()
-                if share.recipient_paid_date
-                else None,
-                "payment_id": payment_id,
-            },
-        }
-    )
+    db.session.flush()
+    response_payload = {
+        "success": True,
+        "data": {
+            "id": share.id,
+            "message": message,
+            "recipient_paid_date": _isoformat_utc(share.recipient_paid_date),
+            "payment_id": payment_id,
+            "updated_at": _isoformat_utc(share.updated_at),
+        },
+    }
+    replay = _commit_with_client_mutation(mutation, response_payload)
+    if replay:
+        return replay
+    return jsonify(response_payload)
 
 
 @api_v2_bp.route("/users/search", methods=["GET"])
@@ -4484,6 +5311,32 @@ def jwt_change_password():
     return _set_refresh_cookie(response, refresh_token)
 
 
+@api_v2_bp.route("/auth/reauthenticate", methods=["POST"])
+@limiter.limit("10 per minute;30 per hour")
+@jwt_required
+def jwt_reauthenticate():
+    """Verify the current user's password without issuing or rotating credentials."""
+    data = request.get_json(force=True, silent=True)
+    password = data.get("password") if data else None
+    if not password:
+        return jsonify({"success": False, "error": "Password is required"}), 400
+
+    user = db.session.get(User, g.jwt_user_id)
+    if not user or not user.password_hash:
+        return jsonify(
+            {
+                "success": False,
+                "error": "Password reauthentication is unavailable for this account",
+            }
+        ), 400
+    if not user.check_password(password):
+        return jsonify({"success": False, "error": "Password is incorrect"}), 401
+
+    # Persist transparent password-hash upgrades performed by check_password.
+    db.session.commit()
+    return jsonify({"success": True, "data": {"reauthenticated": True}})
+
+
 # ============ OIDC / OAuth Routes ============
 
 # Cache for OIDC discovery metadata (provider -> (metadata_dict, fetched_at))
@@ -4563,7 +5416,12 @@ def _cleanup_used_nonces():
 
 
 def _generate_oauth_state(
-    provider, code_verifier, nonce, flow="login", link_user_id=None
+    provider,
+    code_verifier,
+    nonce,
+    flow="login",
+    link_user_id=None,
+    redirect_uri=None,
 ):
     """Generate encrypted state parameter as signed JWT.
 
@@ -4584,7 +5442,27 @@ def _generate_oauth_state(
     }
     if link_user_id is not None:
         state_payload["link_user_id"] = link_user_id
+    if redirect_uri is not None:
+        state_payload["redirect_uri"] = redirect_uri
     return jwt.encode(state_payload, JWT_SECRET_KEY, algorithm="HS256")
+
+
+def _resolve_oauth_redirect_uri(requested_uri=None):
+    """Resolve an exact allowlisted OAuth redirect URI.
+
+    Exact matching prevents a caller from turning the authorization endpoint
+    into an open redirect. The first configured URI is the existing web
+    callback and remains the default for alpha/web clients.
+    """
+    allowed = get_oauth_redirect_uris()
+    requested = requested_uri.strip() if isinstance(requested_uri, str) else None
+    redirect_uri = requested or allowed[0]
+    if redirect_uri not in allowed:
+        return None, (
+            jsonify({"success": False, "error": "Redirect URI is not allowed"}),
+            400,
+        )
+    return redirect_uri, None
 
 
 def _verify_oauth_state(state_token):
@@ -4818,6 +5696,12 @@ def oauth_authorize(provider):
             return jsonify({"success": False, "error": "Invalid or expired token"}), 401
         link_user_id = payload["user_id"]
 
+    redirect_uri, redirect_error = _resolve_oauth_redirect_uri(
+        request.args.get("redirect_uri")
+    )
+    if redirect_error:
+        return redirect_error
+
     cfg = get_oauth_provider_config(provider)
     if not cfg:
         return jsonify(
@@ -4846,6 +5730,7 @@ def oauth_authorize(provider):
         id_token_nonce,
         flow=flow,
         link_user_id=link_user_id,
+        redirect_uri=redirect_uri,
     )
 
     # Build authorization URL
@@ -4856,9 +5741,6 @@ def oauth_authorize(provider):
         ), 502
 
     from urllib.parse import urlencode
-
-    app_url = os.environ.get("APP_URL", "http://localhost:5173")
-    redirect_uri = f"{app_url}/auth/callback"
 
     params = {
         "response_type": "code",
@@ -4876,7 +5758,16 @@ def oauth_authorize(provider):
         params["response_mode"] = "form_post"
 
     auth_url = f"{auth_endpoint}?{urlencode(params)}"
-    return jsonify({"success": True, "data": {"auth_url": auth_url, "state": state}})
+    return jsonify(
+        {
+            "success": True,
+            "data": {
+                "auth_url": auth_url,
+                "state": state,
+                "redirect_uri": redirect_uri,
+            },
+        }
+    )
 
 
 @api_v2_bp.route("/auth/oauth/<provider>/callback", methods=["POST"])
@@ -4907,6 +5798,17 @@ def oauth_callback(provider):
     if state_payload.get("provider") != provider:
         return jsonify({"success": False, "error": "State provider mismatch"}), 400
 
+    redirect_uri, redirect_error = _resolve_oauth_redirect_uri(
+        state_payload.get("redirect_uri")
+    )
+    if redirect_error:
+        return redirect_error
+    requested_redirect_uri = data.get("redirect_uri")
+    if requested_redirect_uri and requested_redirect_uri != redirect_uri:
+        return jsonify(
+            {"success": False, "error": "Redirect URI does not match authorization request"}
+        ), 400
+
     code_verifier = state_payload.get("code_verifier")
     cfg = get_oauth_provider_config(provider)
     if not cfg:
@@ -4927,9 +5829,6 @@ def oauth_callback(provider):
         ), 502
 
     import requests as http_requests
-
-    app_url = os.environ.get("APP_URL", "http://localhost:5173")
-    redirect_uri = f"{app_url}/auth/callback"
 
     token_data = {
         "grant_type": "authorization_code",
@@ -5219,6 +6118,9 @@ def oauth_callback(provider):
         ), 403
 
     # Issue JWT tokens
+    if flow != "link" and _record_login_if_due(user):
+        db.session.commit()
+
     access_token = create_access_token(user.id, user.role)
     refresh_token = create_refresh_token(user.id, data.get("device_info"))
     databases = [
@@ -5703,13 +6605,13 @@ def twofa_passkey_register():
             credential=registration,
             expected_challenge=expected_challenge,
             expected_rp_id=WEBAUTHN_RP_ID,
-            expected_origin=WEBAUTHN_ORIGIN,
+            expected_origin=WEBAUTHN_EXPECTED_ORIGINS,
         )
     except Exception as e:
         logger.error(f"Passkey registration verification failed: {e}")
         error_text = str(e).lower()
         if "origin" in error_text:
-            message = "Passkey origin mismatch. Check WEBAUTHN_ORIGIN."
+            message = "Passkey origin mismatch. Check WEBAUTHN_ORIGIN and WEBAUTHN_ANDROID_ORIGINS."
         elif "rp id" in error_text or "rp_id" in error_text:
             message = "Passkey RP ID mismatch. Check WEBAUTHN_RP_ID."
         elif "challenge" in error_text:
@@ -6223,7 +7125,7 @@ def twofa_verify():
                 credential=auth_credential,
                 expected_challenge=expected_challenge,
                 expected_rp_id=WEBAUTHN_RP_ID,
-                expected_origin=WEBAUTHN_ORIGIN,
+                expected_origin=WEBAUTHN_EXPECTED_ORIGINS,
                 credential_public_key=base64.urlsafe_b64decode(
                     stored_cred.public_key + "=="
                 ),
@@ -6285,6 +7187,7 @@ def twofa_verify():
 
     # Mark challenge as used
     challenge.used = True
+    _record_login_if_due(user)
     db.session.commit()
 
     # Issue JWT tokens
@@ -6994,7 +7897,7 @@ def jwt_get_version():
         {
             "success": True,
             "data": {
-                "version": "4.3.2",
+                "version": SERVER_VERSION,
                 "api_version": "v2",
                 "license": "O'Saasy",
                 "license_url": "https://osaasy.dev/",
@@ -7015,6 +7918,7 @@ def jwt_get_version():
                     "shared_bills",
                     "self_hosted_oidc",
                 ],
+                "mobile": get_mobile_capabilities(),
             },
         }
     )
@@ -7046,7 +7950,10 @@ def jwt_get_upcoming_alerts():
     accessible_db_ids, db_name_lookup = result
 
     today = datetime.date.today()
-    horizon_days = int(request.args.get("horizon_days", 30))
+    try:
+        horizon_days = int(request.args.get("horizon_days", 30))
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "horizon_days must be a number"}), 400
     horizon_days = max(1, min(horizon_days, 90))
     end_date = today + datetime.timedelta(days=horizon_days)
 
@@ -7454,7 +8361,7 @@ def jwt_sync_push():
     """
     Push local changes to server with conflict resolution.
 
-    Uses last-write-wins strategy based on timestamps.
+    Uses optimistic concurrency based on client base timestamps.
 
     Request body:
     {
@@ -7466,8 +8373,12 @@ def jwt_sync_push():
             {"id": 1, "bill_id": 1, "updated_at": "ISO timestamp", ...},
             {"id": null, "bill_id": 1, ...}  // New payment
         ],
-        "deleted_bills": [1, 2],  // IDs of bills to archive
-        "deleted_payments": [1, 2]  // IDs of payments to delete
+        "deleted_bills": [
+            {"id": 1, "base_updated_at": "RFC3339 timestamp"}
+        ],
+        "deleted_payments": [
+            {"id": 1, "base_updated_at": "RFC3339 timestamp"}
+        ]
     }
 
     Response includes:
@@ -7483,70 +8394,82 @@ def jwt_sync_push():
         return jsonify({"success": False, "error": "Database not found"}), 404
 
     data = request.get_json(force=True, silent=True)
-    if not data:
+    if not isinstance(data, dict) or not data:
         return jsonify({"success": False, "error": "Invalid JSON body"}), 400
+
+    sync_collection_names = (
+        "bills",
+        "payments",
+        "deleted_bills",
+        "deleted_payments",
+    )
+    for collection_name in sync_collection_names:
+        if collection_name in data and not isinstance(data[collection_name], list):
+            return _error_response(
+                "invalid_sync_payload",
+                f"{collection_name} must be an array",
+                400,
+            )
+
+    mutation, mutation_response = _prepare_client_mutation(
+        data, target_db.id, "sync.push"
+    )
+    if mutation_response:
+        return mutation_response
 
     accepted_bills = []
     rejected_bills = []
     accepted_payments = []
     rejected_payments = []
+    bill_changes = data.get("bills", [])
+    payment_changes = data.get("payments", [])
+    bill_deletions = data.get("deleted_bills", [])
+    payment_deletions = data.get("deleted_payments", [])
+    duplicate_bill_ids = _duplicate_sync_entity_ids(bill_changes, bill_deletions)
+    duplicate_payment_ids = _duplicate_sync_entity_ids(
+        payment_changes, payment_deletions
+    )
 
     # Process bill changes
-    for bill_data in data.get("bills", []):
+    for bill_data in bill_changes:
+        if not isinstance(bill_data, dict):
+            rejected_bills.append({"id": None, "reason": "invalid_entry"})
+            continue
         bill_id = bill_data.get("id")
-        client_updated = bill_data.get("last_updated")
+        is_existing_bill = "id" in bill_data and bill_id is not None
+        client_updated = bill_data.get("base_updated_at") or bill_data.get(
+            "last_updated"
+        )
 
-        if client_updated:
-            try:
-                client_time = datetime.datetime.fromisoformat(
-                    client_updated.replace("Z", "+00:00")
+        if is_existing_bill:
+            if not _is_positive_integer_id(bill_id):
+                rejected_bills.append({"id": bill_id, "reason": "invalid_id"})
+                continue
+            if bill_id in duplicate_bill_ids:
+                rejected_bills.append(
+                    {"id": bill_id, "reason": "duplicate_entity_mutation"}
                 )
-            except ValueError:
-                client_time = None
-        else:
-            client_time = None
+                continue
+            client_time, timestamp_error = _parse_sync_timestamp(client_updated)
+            if timestamp_error:
+                rejected_bills.append({"id": bill_id, "reason": timestamp_error})
+                continue
 
-        if bill_id:
             # Update existing bill
-            bill = db.session.get(Bill, bill_id)
+            bill = _get_bill_for_mutation(bill_id, required=False)
             if not bill or bill.database_id != target_db.id:
                 rejected_bills.append({"id": bill_id, "reason": "not_found"})
                 continue
 
-            # Conflict check: compare timestamps
-            # Normalize to naive UTC for comparison (PostgreSQL returns naive datetimes)
-            server_time = bill.last_updated
-            client_time_naive = (
-                client_time.replace(tzinfo=None)
-                if client_time and client_time.tzinfo
-                else client_time
-            )
-            if client_time_naive and server_time and client_time_naive < server_time:
+            # The row lock makes this conflict check and the write one transaction.
+            if _sync_timestamp_conflicts(client_time, bill.last_updated):
                 # Server wins - client data is stale
                 rejected_bills.append(
                     {
                         "id": bill_id,
                         "reason": "conflict",
-                        "server_data": {
-                            "id": bill.id,
-                            "name": bill.name,
-                            "amount": bill.amount,
-                            "varies": bill.is_variable,
-                            "frequency": bill.frequency,
-                            "next_due": bill.due_date,
-                            "auto_payment": bill.auto_pay,
-                            "icon": bill.icon,
-                            "type": bill.type,
-                            "account": bill.account,
-                            "category": bill.category,
-                            "notes": bill.notes,
-                            "reminder_enabled": bill.reminder_enabled,
-                            "reminder_days": parse_reminder_days(bill.reminder_days),
-                            "archived": bill.archived,
-                            "last_updated": bill.last_updated.isoformat()
-                            if bill.last_updated
-                            else None,
-                        },
+                        "code": "resource_conflict",
+                        "server_data": _bill_conflict_data(bill),
                     }
                 )
                 continue
@@ -7640,23 +8563,36 @@ def jwt_sync_push():
             )
 
     # Process payment changes
-    for payment_data in data.get("payments", []):
+    for payment_data in payment_changes:
+        if not isinstance(payment_data, dict):
+            rejected_payments.append({"id": None, "reason": "invalid_entry"})
+            continue
         payment_id = payment_data.get("id")
-        client_updated = payment_data.get("updated_at")
+        is_existing_payment = "id" in payment_data and payment_id is not None
+        client_updated = payment_data.get("base_updated_at") or payment_data.get(
+            "updated_at"
+        )
 
-        if client_updated:
-            try:
-                client_time = datetime.datetime.fromisoformat(
-                    client_updated.replace("Z", "+00:00")
+        if is_existing_payment:
+            if not _is_positive_integer_id(payment_id):
+                rejected_payments.append(
+                    {"id": payment_id, "reason": "invalid_id"}
                 )
-            except ValueError:
-                client_time = None
-        else:
-            client_time = None
+                continue
+            if payment_id in duplicate_payment_ids:
+                rejected_payments.append(
+                    {"id": payment_id, "reason": "duplicate_entity_mutation"}
+                )
+                continue
+            client_time, timestamp_error = _parse_sync_timestamp(client_updated)
+            if timestamp_error:
+                rejected_payments.append(
+                    {"id": payment_id, "reason": timestamp_error}
+                )
+                continue
 
-        if payment_id:
             # Update existing payment
-            payment = db.session.get(Payment, payment_id)
+            payment = _get_payment_for_mutation(payment_id, required=False)
             if not payment:
                 rejected_payments.append({"id": payment_id, "reason": "not_found"})
                 continue
@@ -7667,23 +8603,14 @@ def jwt_sync_push():
                 rejected_payments.append({"id": payment_id, "reason": "access_denied"})
                 continue
 
-            # Conflict check
-            server_time = payment.updated_at
-            if client_time and server_time and client_time < server_time:
+            # The row lock makes this conflict check and the write one transaction.
+            if _sync_timestamp_conflicts(client_time, payment.updated_at):
                 rejected_payments.append(
                     {
                         "id": payment_id,
                         "reason": "conflict",
-                        "server_data": {
-                            "id": payment.id,
-                            "bill_id": payment.bill_id,
-                            "amount": payment.amount,
-                            "payment_date": payment.payment_date,
-                            "notes": payment.notes,
-                            "updated_at": payment.updated_at.isoformat()
-                            if payment.updated_at
-                            else None,
-                        },
+                        "code": "resource_conflict",
+                        "server_data": _payment_conflict_data(payment),
                     }
                 )
                 continue
@@ -7700,11 +8627,12 @@ def jwt_sync_push():
         else:
             # Create new payment
             bill_id = payment_data.get("bill_id")
-            if (
-                not bill_id
-                or not payment_data.get("amount")
-                or not payment_data.get("payment_date")
-            ):
+            if not _is_positive_integer_id(bill_id):
+                rejected_payments.append(
+                    {"id": None, "reason": "invalid_bill_id", "data": payment_data}
+                )
+                continue
+            if not payment_data.get("amount") or not payment_data.get("payment_date"):
                 rejected_payments.append(
                     {
                         "id": None,
@@ -7739,36 +8667,99 @@ def jwt_sync_push():
             )
 
     # Process deletions (archive bills, delete payments)
-    for bill_id in data.get("deleted_bills", []):
-        bill = db.session.get(Bill, bill_id)
+    for bill_ref in bill_deletions:
+        if not isinstance(bill_ref, dict):
+            rejected_bills.append(
+                {"id": bill_ref, "reason": "missing_base_updated_at"}
+            )
+            continue
+
+        bill_id = bill_ref.get("id")
+        if not _is_positive_integer_id(bill_id):
+            rejected_bills.append({"id": bill_id, "reason": "invalid_id"})
+            continue
+        if bill_id in duplicate_bill_ids:
+            rejected_bills.append(
+                {"id": bill_id, "reason": "duplicate_entity_mutation"}
+            )
+            continue
+        base_updated_at, timestamp_error = _parse_sync_timestamp(
+            bill_ref.get("base_updated_at")
+        )
+        if timestamp_error:
+            rejected_bills.append({"id": bill_id, "reason": timestamp_error})
+            continue
+
+        bill = _get_bill_for_mutation(bill_id, required=False)
         if bill and bill.database_id == target_db.id:
+            if _sync_timestamp_conflicts(base_updated_at, bill.last_updated):
+                rejected_bills.append(
+                    {
+                        "id": bill_id,
+                        "reason": "conflict",
+                        "code": "resource_conflict",
+                        "server_data": _bill_conflict_data(bill),
+                    }
+                )
+                continue
             bill.archived = True
             accepted_bills.append({"id": bill_id, "action": "archived"})
 
-    for payment_id in data.get("deleted_payments", []):
-        payment = db.session.get(Payment, payment_id)
+    for payment_ref in payment_deletions:
+        if not isinstance(payment_ref, dict):
+            rejected_payments.append(
+                {"id": payment_ref, "reason": "missing_base_updated_at"}
+            )
+            continue
+
+        payment_id = payment_ref.get("id")
+        if not _is_positive_integer_id(payment_id):
+            rejected_payments.append({"id": payment_id, "reason": "invalid_id"})
+            continue
+        if payment_id in duplicate_payment_ids:
+            rejected_payments.append(
+                {"id": payment_id, "reason": "duplicate_entity_mutation"}
+            )
+            continue
+        base_updated_at, timestamp_error = _parse_sync_timestamp(
+            payment_ref.get("base_updated_at")
+        )
+        if timestamp_error:
+            rejected_payments.append({"id": payment_id, "reason": timestamp_error})
+            continue
+
+        payment = _get_payment_for_mutation(payment_id, required=False)
         if payment:
             bill = db.session.get(Bill, payment.bill_id)
             if bill and bill.database_id == target_db.id:
+                if _sync_timestamp_conflicts(base_updated_at, payment.updated_at):
+                    rejected_payments.append(
+                        {
+                            "id": payment_id,
+                            "reason": "conflict",
+                            "code": "resource_conflict",
+                            "server_data": _payment_conflict_data(payment),
+                        }
+                    )
+                    continue
                 db.session.delete(payment)
                 accepted_payments.append({"id": payment_id, "action": "deleted"})
 
-    db.session.commit()
-
-    server_time = datetime.datetime.now(datetime.timezone.utc).isoformat() + "Z"
-
-    return jsonify(
-        {
-            "success": True,
-            "data": {
-                "accepted_bills": accepted_bills,
-                "rejected_bills": rejected_bills,
-                "accepted_payments": accepted_payments,
-                "rejected_payments": rejected_payments,
-                "server_time": server_time,
-            },
-        }
-    )
+    server_time = _isoformat_utc(datetime.datetime.now(datetime.timezone.utc))
+    response_payload = {
+        "success": True,
+        "data": {
+            "accepted_bills": accepted_bills,
+            "rejected_bills": rejected_bills,
+            "accepted_payments": accepted_payments,
+            "rejected_payments": rejected_payments,
+            "server_time": server_time,
+        },
+    }
+    replay = _commit_with_client_mutation(mutation, response_payload)
+    if replay:
+        return replay
+    return jsonify(response_payload)
 
 
 @api_v2_bp.route("/sync", methods=["GET"])
@@ -7864,7 +8855,7 @@ def jwt_sync():
     ]
 
     # Server timestamp for next sync
-    server_time = datetime.datetime.now(datetime.timezone.utc).isoformat() + "Z"
+    server_time = _isoformat_utc(datetime.datetime.now(datetime.timezone.utc))
 
     return jsonify(
         {
@@ -7946,7 +8937,7 @@ def jwt_sync_full():
         for p in payments
     ]
 
-    server_time = datetime.datetime.now(datetime.timezone.utc).isoformat() + "Z"
+    server_time = _isoformat_utc(datetime.datetime.now(datetime.timezone.utc))
 
     return jsonify(
         {
@@ -7958,6 +8949,81 @@ def jwt_sync_full():
             },
         }
     )
+
+
+# --- Telemetry consent helpers ---
+
+
+def _get_or_create_telemetry_settings():
+    """Return the singleton consent row, conservatively deriving legacy state."""
+    settings = db.session.get(TelemetrySettings, 1)
+    if settings:
+        return settings
+
+    owners = User.query.filter(
+        User.role == 'admin',
+        User.created_by_id.is_(None),
+    ).order_by(User.id).all()
+    disabled_owner = next(
+        (owner for owner in owners if owner.telemetry_opt_out is True),
+        None,
+    )
+    accepted_owner = next(
+        (
+            owner for owner in owners
+            if owner.telemetry_notice_shown_at
+            and owner.telemetry_opt_out is not True
+        ),
+        None,
+    )
+
+    if disabled_owner:
+        state = 'disabled'
+        decided_by = disabled_owner
+        decided_at = (
+            disabled_owner.telemetry_notice_shown_at
+            or datetime.datetime.now(datetime.timezone.utc)
+        )
+    elif accepted_owner:
+        state = 'enabled'
+        decided_by = accepted_owner
+        decided_at = accepted_owner.telemetry_notice_shown_at
+    else:
+        state = 'pending'
+        decided_by = None
+        decided_at = None
+
+    settings = TelemetrySettings(
+        id=1,
+        state=state,
+        decided_by_user_id=decided_by.id if decided_by else None,
+        decided_at=decided_at,
+    )
+    db.session.add(settings)
+    db.session.commit()
+    return settings
+
+
+def _set_telemetry_consent(user, state):
+    settings = _get_or_create_telemetry_settings()
+    settings.state = state
+    settings.decided_by_user_id = user.id
+    settings.decided_at = datetime.datetime.now(datetime.timezone.utc)
+    settings.updated_at = settings.decided_at
+    db.session.commit()
+    return settings
+
+
+def _telemetry_notice_config(settings=None):
+    """Return the effective instance-wide telemetry configuration."""
+    config = {
+        "telemetry_enabled": os.environ.get("TELEMETRY_ENABLED", "true").lower()
+        == "true",
+        "deployment_mode": DEPLOYMENT_MODE,
+    }
+    if settings:
+        config["consent_state"] = settings.state
+    return config
 
 
 # --- Telemetry Consent Endpoints (V2 - JWT Auth) ---
@@ -7984,15 +9050,32 @@ def get_telemetry_notice():
             }
         )
 
-    # Check if notice was already shown
-    if user.telemetry_notice_shown_at:
+    settings = _get_or_create_telemetry_settings()
+    telemetry_config = _telemetry_notice_config(settings)
+
+    if not telemetry_config["telemetry_enabled"]:
         return jsonify(
             {
                 "success": True,
                 "data": {
                     "show_notice": False,
-                    "opted_out": user.telemetry_opt_out,
-                    "notice_shown_at": user.telemetry_notice_shown_at.isoformat(),
+                    "reason": "globally_disabled",
+                    **telemetry_config,
+                },
+            }
+        )
+
+    if settings.state != 'pending':
+        return jsonify(
+            {
+                "success": True,
+                "data": {
+                    "show_notice": False,
+                    "opted_out": settings.state == 'disabled',
+                    "notice_shown_at": settings.decided_at.isoformat()
+                    if settings.decided_at
+                    else None,
+                    **telemetry_config,
                 },
             }
         )
@@ -8003,9 +9086,7 @@ def get_telemetry_notice():
             "success": True,
             "data": {
                 "show_notice": True,
-                "telemetry_enabled": os.environ.get("TELEMETRY_ENABLED", "true").lower()
-                == "true",
-                "deployment_mode": os.environ.get("DEPLOYMENT_MODE", "unknown"),
+                **telemetry_config,
             },
         }
     )
@@ -8024,14 +9105,19 @@ def accept_telemetry():
             {"success": False, "error": "Only account owners can manage telemetry"}
         ), 403
 
-    user.telemetry_notice_shown_at = datetime.datetime.now(datetime.timezone.utc)
-    user.telemetry_opt_out = False
-    db.session.commit()
+    _set_telemetry_consent(user, 'enabled')
 
     logger.info(f"User {user.username} accepted telemetry")
 
     return jsonify(
-        {"success": True, "data": {"message": "Telemetry accepted", "opted_out": False}}
+        {
+            "success": True,
+            "data": {
+                "message": "Telemetry accepted",
+                "opted_out": False,
+                "consent_state": "enabled",
+            },
+        }
     )
 
 
@@ -8048,14 +9134,19 @@ def opt_out_telemetry():
             {"success": False, "error": "Only account owners can manage telemetry"}
         ), 403
 
-    user.telemetry_notice_shown_at = datetime.datetime.now(datetime.timezone.utc)
-    user.telemetry_opt_out = True
-    db.session.commit()
+    _set_telemetry_consent(user, 'disabled')
 
     logger.info(f"User {user.username} opted out of telemetry")
 
     return jsonify(
-        {"success": True, "data": {"message": "Telemetry disabled", "opted_out": True}}
+        {
+            "success": True,
+            "data": {
+                "message": "Telemetry disabled",
+                "opted_out": True,
+                "consent_state": "disabled",
+            },
+        }
     )
 
 

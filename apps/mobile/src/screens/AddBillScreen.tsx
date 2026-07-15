@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -14,35 +14,70 @@ import {
 } from 'react-native';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
-import { api } from '../api/client';
+import { useTranslation } from 'react-i18next';
 import { useTheme } from '../context/ThemeContext';
 import { useAuth } from '../context/AuthContext';
-import { Bill } from '../types';
+import { useMobileRuntime } from '../context/MobileRuntimeContext';
+import { Bill, type BillFrequency, type BillFrequencyType } from '../types';
 import IconPicker from '../components/IconPicker';
 import { BillIcon } from '../components/BillIcon';
+import { billMoveChanges } from '../features/bills/listModels';
 
 type Props = NativeStackScreenProps<any, 'AddBill'>;
 
-const FREQUENCY_OPTIONS = [
-  { label: 'Monthly', value: 'monthly' },
-  { label: 'Weekly', value: 'weekly' },
-  { label: 'Bi-weekly', value: 'biweekly' },
-  { label: 'Quarterly', value: 'quarterly' },
-  { label: 'Yearly', value: 'yearly' },
-  { label: 'One-time', value: 'once' },
+const FREQUENCY_OPTIONS: { labelKey: string; value: BillFrequency }[] = [
+  { labelKey: 'common.frequency.weekly', value: 'weekly' },
+  { labelKey: 'common.frequency.biweekly', value: 'bi-weekly' },
+  { labelKey: 'common.frequency.monthly', value: 'monthly' },
+  { labelKey: 'common.frequency.quarterly', value: 'quarterly' },
+  { labelKey: 'common.frequency.yearly', value: 'yearly' },
+  { labelKey: 'common.frequency.custom', value: 'custom' },
 ];
 
+const WEEKDAYS = [
+  { labelKey: 'common.weekdaysShort.mon', value: 0 },
+  { labelKey: 'common.weekdaysShort.tue', value: 1 },
+  { labelKey: 'common.weekdaysShort.wed', value: 2 },
+  { labelKey: 'common.weekdaysShort.thu', value: 3 },
+  { labelKey: 'common.weekdaysShort.fri', value: 4 },
+  { labelKey: 'common.weekdaysShort.sat', value: 5 },
+  { labelKey: 'common.weekdaysShort.sun', value: 6 },
+];
+
+const REMINDER_OPTIONS = [0, 1, 3, 7, 14, 30];
+
+function parseFrequencyConfig(value?: string): { dates?: number[]; days?: number[] } {
+  if (!value) return {};
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
 export default function AddBillScreen({ navigation, route }: Props) {
+  const { t, i18n } = useTranslation();
   const editBill = route.params?.bill as Bill | undefined;
   const isEditing = !!editBill;
   const { colors, isDark } = useTheme();
   const { currentDatabase, databases } = useAuth();
+  const { bills, createBill, updateBill } = useMobileRuntime();
   const isAllBucketsMode = currentDatabase === '_all_';
+  const initialFrequencyConfig = useMemo(
+    () => parseFrequencyConfig(editBill?.frequency_config),
+    [editBill?.frequency_config],
+  );
 
   const [name, setName] = useState(editBill?.name || '');
   const [amount, setAmount] = useState(editBill?.amount?.toString() || '');
   const [varies, setVaries] = useState(editBill?.varies || false);
-  const [frequency, setFrequency] = useState(editBill?.frequency || 'monthly');
+  const [frequency, setFrequency] = useState<BillFrequency>(editBill?.frequency || 'monthly');
+  const [frequencyType, setFrequencyType] = useState<BillFrequencyType>(editBill?.frequency_type || 'simple');
+  const [monthlyDates, setMonthlyDates] = useState(
+    initialFrequencyConfig.dates?.join(', ') ?? '',
+  );
+  const [weeklyDays, setWeeklyDays] = useState<number[]>(initialFrequencyConfig.days ?? []);
   const [nextDue, setNextDue] = useState<Date>(() => {
     if (editBill?.next_due) {
       return new Date(editBill.next_due + 'T00:00:00');
@@ -52,42 +87,32 @@ export default function AddBillScreen({ navigation, route }: Props) {
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [type, setType] = useState<'expense' | 'deposit'>(editBill?.type || 'expense');
   const [account, setAccount] = useState(editBill?.account || '');
+  const [category, setCategory] = useState(editBill?.category || '');
   const [notes, setNotes] = useState(editBill?.notes || '');
   const [autoPayment, setAutoPayment] = useState(editBill?.auto_payment || false);
+  const [reminderEnabled, setReminderEnabled] = useState(editBill?.reminder_enabled ?? true);
+  const [reminderDays, setReminderDays] = useState<number[]>(
+    editBill?.reminder_days?.length ? editBill.reminder_days : [0, 1, 3, 7],
+  );
   const [icon, setIcon] = useState(editBill?.icon || 'receipt');
   const [showIconPicker, setShowIconPicker] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [accounts, setAccounts] = useState<string[]>([]);
   const [selectedDatabaseId, setSelectedDatabaseId] = useState<number | null>(
     editBill?.database_id || null
+  );
+  const accounts = useMemo(
+    () => [...new Set(bills.map((bill) => bill.account).filter((value): value is string => Boolean(value)))],
+    [bills],
+  );
+  const categories = useMemo(
+    () => [...new Set(bills.map((bill) => bill.category).filter((value): value is string => Boolean(value)))],
+    [bills],
   );
 
   const styles = createStyles(colors);
 
-  useEffect(() => {
-    loadAccounts();
-  }, []);
-
-  async function loadAccounts() {
-    try {
-      const response = await api.getBills();
-      if (response.success && response.data) {
-        const uniqueAccounts = [
-          ...new Set(
-            response.data
-              .map((b) => b.account)
-              .filter((a): a is string => !!a)
-          ),
-        ];
-        setAccounts(uniqueAccounts);
-      }
-    } catch (err) {
-      // Ignore
-    }
-  }
-
   function formatDateForDisplay(date: Date): string {
-    return date.toLocaleDateString('en-US', {
+    return date.toLocaleDateString(i18n.resolvedLanguage ?? i18n.language, {
       weekday: 'short',
       month: 'short',
       day: 'numeric',
@@ -112,53 +137,85 @@ export default function AddBillScreen({ navigation, route }: Props) {
 
   async function handleSubmit() {
     if (!name.trim()) {
-      Alert.alert('Error', 'Please enter a bill name');
+      Alert.alert(t('mobileParity.common.error'), t('billModal.errors.nameRequired'));
       return;
     }
 
     if (!varies && !amount) {
-      Alert.alert('Error', 'Please enter an amount or mark as variable');
+      Alert.alert(t('mobileParity.common.error'), t('mobileParity.addBill.errors.amountRequired'));
       return;
     }
 
     // Validate bucket selection when creating in All Buckets mode
     if (!isEditing && isAllBucketsMode && !selectedDatabaseId) {
-      Alert.alert('Error', 'Please select a bucket for this bill');
+      Alert.alert(t('mobileParity.common.error'), t('billModal.errors.bucketRequired'));
+      return;
+    }
+
+    const specificDates = monthlyDates
+      .split(',')
+      .map((value) => Number.parseInt(value.trim(), 10))
+      .filter((value) => Number.isFinite(value))
+      .sort((left, right) => left - right);
+    if (frequency === 'monthly' && frequencyType === 'specific_dates') {
+      const invalid = specificDates.length === 0
+        || specificDates.some((value) => value < 1 || value > 31);
+      if (invalid) {
+        Alert.alert(t('mobileParity.addBill.errors.invalidSchedule'), t('mobileParity.addBill.errors.monthDates'));
+        return;
+      }
+    }
+    if (frequency === 'custom' && weeklyDays.length === 0) {
+      Alert.alert(t('mobileParity.addBill.errors.invalidSchedule'), t('mobileParity.addBill.errors.weekday'));
       return;
     }
 
     setIsSubmitting(true);
+
+    let nextDueValue = formatDateForApi(nextDue);
+    let frequencyConfig: { dates?: number[]; days?: number[] } = {};
+    if (frequency === 'monthly' && frequencyType === 'specific_dates') {
+      frequencyConfig = { dates: specificDates };
+      const now = new Date();
+      const nextDay = specificDates.find((day) => day > now.getDate());
+      const year = nextDay ? now.getFullYear() : (now.getMonth() === 11 ? now.getFullYear() + 1 : now.getFullYear());
+      const month = nextDay ? now.getMonth() : (now.getMonth() + 1) % 12;
+      const requestedDay = nextDay ?? specificDates[0];
+      const maximumDay = new Date(year, month + 1, 0).getDate();
+      nextDueValue = formatDateForApi(new Date(year, month, Math.min(requestedDay, maximumDay)));
+    } else if (frequency === 'custom') {
+      frequencyConfig = { days: [...weeklyDays].sort((left, right) => left - right) };
+    }
 
     const billData: Partial<Bill> = {
       name: name.trim(),
       amount: varies ? null : parseFloat(amount),
       varies,
       frequency,
-      next_due: formatDateForApi(nextDue),
+      frequency_type: frequency === 'custom' ? 'multiple_weekly' : frequencyType,
+      frequency_config: JSON.stringify(frequencyConfig),
+      next_due: nextDueValue,
       type,
       account: account.trim() || null,
+      category: category.trim() || null,
       notes: notes.trim() || null,
       auto_payment: autoPayment,
+      reminder_enabled: reminderEnabled,
+      reminder_days: reminderDays,
       icon,
       // Include database_id if creating in All Buckets mode or moving to different bucket
-      ...(selectedDatabaseId ? { database_id: selectedDatabaseId } : {}),
+      ...(selectedDatabaseId ? billMoveChanges(selectedDatabaseId) : {}),
     };
 
     try {
-      let result;
       if (isEditing && editBill) {
-        result = await api.updateBill(editBill.id, billData);
+        await updateBill(editBill, billData);
       } else {
-        result = await api.createBill(billData);
+        await createBill(billData);
       }
-
-      if (result.success) {
-        navigation.goBack();
-      } else {
-        Alert.alert('Error', result.error || 'Failed to save bill');
-      }
+      navigation.goBack();
     } catch (err) {
-      Alert.alert('Error', 'Network error');
+      Alert.alert(t('mobileParity.addBill.errors.saveTitle'), err instanceof Error ? err.message : t('mobileParity.addBill.errors.saveBody'));
     } finally {
       setIsSubmitting(false);
     }
@@ -172,14 +229,14 @@ export default function AddBillScreen({ navigation, route }: Props) {
       {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity onPress={() => navigation.goBack()} style={styles.headerButton}>
-          <Text style={styles.cancelText}>Cancel</Text>
+          <Text style={styles.cancelText}>{t('mobileParity.common.cancel')}</Text>
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>{isEditing ? 'Edit Bill' : 'New Bill'}</Text>
+        <Text style={styles.headerTitle}>{isEditing ? t('billModal.titleEdit') : t('mobileParity.addBill.newTitle')}</Text>
         <TouchableOpacity onPress={handleSubmit} disabled={isSubmitting} style={styles.headerButton}>
           {isSubmitting ? (
             <ActivityIndicator size="small" color={colors.primary} />
           ) : (
-            <Text style={styles.saveText}>Save</Text>
+            <Text style={styles.saveText}>{t('mobileParity.common.save')}</Text>
           )}
         </TouchableOpacity>
       </View>
@@ -197,7 +254,7 @@ export default function AddBillScreen({ navigation, route }: Props) {
             <Text style={[
               styles.typeButtonText,
               type === 'expense' && styles.typeButtonTextActive,
-            ]}>Expense</Text>
+            ]}>{t('mobileParity.addBill.expense')}</Text>
           </TouchableOpacity>
           <TouchableOpacity
             style={[
@@ -209,12 +266,12 @@ export default function AddBillScreen({ navigation, route }: Props) {
             <Text style={[
               styles.typeButtonText,
               type === 'deposit' && styles.typeButtonTextActive,
-            ]}>Income</Text>
+            ]}>{t('mobileParity.addBill.income')}</Text>
           </TouchableOpacity>
         </View>
 
         {/* Name & Icon */}
-        <Text style={styles.label}>Name & Icon</Text>
+        <Text style={styles.label}>{t('mobileParity.addBill.nameIcon')}</Text>
         <View style={styles.nameRow}>
           <TouchableOpacity 
             style={styles.iconButton}
@@ -226,7 +283,7 @@ export default function AddBillScreen({ navigation, route }: Props) {
             style={[styles.input, styles.nameInput]}
             value={name}
             onChangeText={setName}
-            placeholder="e.g., Electric Bill"
+            placeholder={t('billModal.billNamePlaceholder')}
             placeholderTextColor={colors.textMuted}
           />
         </View>
@@ -234,7 +291,7 @@ export default function AddBillScreen({ navigation, route }: Props) {
         {/* Amount */}
         <View style={styles.amountRow}>
           <View style={styles.amountInputContainer}>
-            <Text style={styles.label}>Amount</Text>
+            <Text style={styles.label}>{t('billModal.amountLabel')}</Text>
             <TextInput
               style={[styles.input, varies && styles.inputDisabled]}
               value={amount}
@@ -246,7 +303,7 @@ export default function AddBillScreen({ navigation, route }: Props) {
             />
           </View>
           <View style={styles.variableContainer}>
-            <Text style={styles.label}>Variable</Text>
+            <Text style={styles.label}>{t('mobileParity.addBill.variable')}</Text>
             <Switch
               value={varies}
               onValueChange={setVaries}
@@ -257,7 +314,7 @@ export default function AddBillScreen({ navigation, route }: Props) {
         </View>
 
         {/* Frequency */}
-        <Text style={styles.label}>Frequency</Text>
+        <Text style={styles.label}>{t('billModal.frequencyLabel')}</Text>
         <View style={styles.frequencyContainer}>
           {FREQUENCY_OPTIONS.map((option) => (
             <TouchableOpacity
@@ -266,24 +323,85 @@ export default function AddBillScreen({ navigation, route }: Props) {
                 styles.frequencyButton,
                 frequency === option.value && styles.frequencyButtonActive,
               ]}
-              onPress={() => setFrequency(option.value)}
+              onPress={() => {
+                setFrequency(option.value);
+                setFrequencyType(option.value === 'custom' ? 'multiple_weekly' : 'simple');
+              }}
             >
               <Text style={[
                 styles.frequencyButtonText,
                 frequency === option.value && styles.frequencyButtonTextActive,
-              ]}>{option.label}</Text>
+              ]}>{t(option.labelKey)}</Text>
             </TouchableOpacity>
           ))}
         </View>
 
+        {frequency === 'monthly' && (
+          <View style={styles.schedulePanel}>
+            <View style={styles.switchRowCompact}>
+              <View style={styles.switchCopy}>
+                <Text style={styles.switchTitle}>{t('mobileParity.addBill.useSpecificDates')}</Text>
+                <Text style={styles.switchDescription}>{t('mobileParity.addBill.specificDatesDetail')}</Text>
+              </View>
+              <Switch
+                value={frequencyType === 'specific_dates'}
+                onValueChange={(enabled) => setFrequencyType(enabled ? 'specific_dates' : 'simple')}
+                trackColor={{ false: colors.border, true: colors.primary }}
+                thumbColor="#fff"
+              />
+            </View>
+            {frequencyType === 'specific_dates' && (
+              <TextInput
+                style={styles.input}
+                value={monthlyDates}
+                onChangeText={setMonthlyDates}
+                keyboardType="numbers-and-punctuation"
+                placeholder={t('billModal.datesPlaceholder')}
+                placeholderTextColor={colors.textMuted}
+                accessibilityLabel={t('mobileParity.addBill.specificDatesA11y')}
+              />
+            )}
+          </View>
+        )}
+
+        {frequency === 'custom' && (
+          <View style={styles.schedulePanel}>
+            <Text style={styles.switchTitle}>{t('billModal.daysOfWeek')}</Text>
+            <View style={styles.dayContainer}>
+              {WEEKDAYS.map((day) => {
+                const selected = weeklyDays.includes(day.value);
+                return (
+                  <TouchableOpacity
+                    key={day.value}
+                    style={[styles.dayButton, selected && styles.frequencyButtonActive]}
+                    onPress={() => setWeeklyDays((current) => selected
+                      ? current.filter((value) => value !== day.value)
+                      : [...current, day.value])}
+                    accessibilityRole="checkbox"
+                    accessibilityState={{ checked: selected }}
+                  >
+                    <Text style={[styles.frequencyButtonText, selected && styles.frequencyButtonTextActive]}>
+                      {t(day.labelKey)}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          </View>
+        )}
+
         {/* Next Due Date */}
-        <Text style={styles.label}>Next Due Date</Text>
-        <TouchableOpacity
-          style={styles.dateButton}
-          onPress={() => setShowDatePicker(true)}
-        >
-          <Text style={styles.dateButtonText}>{formatDateForDisplay(nextDue)}</Text>
-        </TouchableOpacity>
+        {frequencyType !== 'specific_dates' && (
+          <>
+            <Text style={styles.label}>{t('billModal.nextDueLabel')}</Text>
+            <TouchableOpacity
+              style={styles.dateButton}
+              onPress={() => setShowDatePicker(true)}
+            >
+              <Text style={styles.dateButtonText}>{formatDateForDisplay(nextDue)}</Text>
+            </TouchableOpacity>
+          </>
+        )}
 
         {showDatePicker && (
           <DateTimePicker
@@ -300,17 +418,17 @@ export default function AddBillScreen({ navigation, route }: Props) {
             style={styles.doneButton}
             onPress={() => setShowDatePicker(false)}
           >
-            <Text style={styles.doneButtonText}>Done</Text>
+            <Text style={styles.doneButtonText}>{t('mobileParity.common.done')}</Text>
           </TouchableOpacity>
         )}
 
         {/* Account */}
-        <Text style={styles.label}>Account (optional)</Text>
+        <Text style={styles.label}>{t('mobileParity.addBill.accountOptional')}</Text>
         <TextInput
           style={styles.input}
           value={account}
           onChangeText={setAccount}
-          placeholder="e.g., Chase Checking"
+          placeholder={t('billModal.accountPlaceholder')}
           placeholderTextColor={colors.textMuted}
         />
         {accounts.length > 0 && (
@@ -327,11 +445,30 @@ export default function AddBillScreen({ navigation, route }: Props) {
           </ScrollView>
         )}
 
+        {/* Category */}
+        <Text style={styles.label}>{t('mobileParity.addBill.categoryOptional')}</Text>
+        <TextInput
+          style={styles.input}
+          value={category}
+          onChangeText={setCategory}
+          placeholder={t('billModal.categoryPlaceholder')}
+          placeholderTextColor={colors.textMuted}
+        />
+        {categories.length > 0 && (
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.accountSuggestions}>
+            {categories.map((item) => (
+              <TouchableOpacity key={item} style={styles.accountChip} onPress={() => setCategory(item)}>
+                <Text style={styles.accountChipText}>{item}</Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        )}
+
         {/* Bucket selector - shown when creating in All Buckets mode or editing */}
         {(isAllBucketsMode || isEditing) && databases.length > 0 && (
           <>
             <Text style={styles.label}>
-              {!isEditing && isAllBucketsMode ? 'Bucket *' : 'Bucket'}
+              {!isEditing && isAllBucketsMode ? t('mobileParity.addBill.bucketRequired') : t('billModal.bucketLabel')}
             </Text>
             <View style={styles.bucketContainer}>
               {databases.map((db) => (
@@ -351,17 +488,17 @@ export default function AddBillScreen({ navigation, route }: Props) {
               ))}
             </View>
             {!isEditing && isAllBucketsMode && (
-              <Text style={styles.bucketHint}>Select which bucket to create this bill in</Text>
+              <Text style={styles.bucketHint}>{t('billModal.bucketDescriptionCreate')}</Text>
             )}
             {isEditing && (
-              <Text style={styles.bucketHint}>Change which bucket this bill belongs to</Text>
+              <Text style={styles.bucketHint}>{t('billModal.bucketDescriptionMove')}</Text>
             )}
           </>
         )}
 
         {/* Auto-payment */}
         <View style={styles.switchRow}>
-          <Text style={styles.switchLabel}>Auto-payment enabled</Text>
+          <Text style={styles.switchLabel}>{t('mobileParity.addBill.autoPayment')}</Text>
           <Switch
             value={autoPayment}
             onValueChange={setAutoPayment}
@@ -370,13 +507,53 @@ export default function AddBillScreen({ navigation, route }: Props) {
           />
         </View>
 
+        <View style={styles.switchRow}>
+          <View style={styles.switchCopy}>
+            <Text style={styles.switchLabel}>{t('mobileParity.addBill.localReminders')}</Text>
+            <Text style={styles.switchDescription}>{t('mobileParity.addBill.localRemindersDetail')}</Text>
+          </View>
+          <Switch
+            value={reminderEnabled}
+            onValueChange={setReminderEnabled}
+            trackColor={{ false: colors.border, true: colors.primary }}
+            thumbColor="#fff"
+          />
+        </View>
+
+        {reminderEnabled && (
+          <>
+            <Text style={styles.label}>{t('mobileParity.addBill.remindMe')}</Text>
+            <View style={styles.frequencyContainer}>
+              {REMINDER_OPTIONS.map((day) => {
+                const selected = reminderDays.includes(day);
+                const label = day === 0 ? t('mobileParity.addBill.dueDay') : t('mobileParity.addBill.dayBefore', { count: day });
+                return (
+                  <TouchableOpacity
+                    key={day}
+                    style={[styles.frequencyButton, selected && styles.frequencyButtonActive]}
+                    onPress={() => setReminderDays((current) => selected
+                      ? current.filter((value) => value !== day)
+                      : [...current, day].sort((left, right) => left - right))}
+                    accessibilityRole="checkbox"
+                    accessibilityState={{ checked: selected }}
+                  >
+                    <Text style={[styles.frequencyButtonText, selected && styles.frequencyButtonTextActive]}>
+                      {label}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          </>
+        )}
+
         {/* Notes */}
-        <Text style={styles.label}>Notes (optional)</Text>
+        <Text style={styles.label}>{t('mobileParity.addBill.notesOptional')}</Text>
         <TextInput
           style={[styles.input, styles.notesInput]}
           value={notes}
           onChangeText={setNotes}
-          placeholder="Any additional notes..."
+          placeholder={t('billModal.notesPlaceholder')}
           placeholderTextColor={colors.textMuted}
           multiline
           numberOfLines={3}
@@ -538,6 +715,49 @@ const createStyles = (colors: any) => StyleSheet.create({
   frequencyButtonTextActive: {
     color: '#fff',
     fontWeight: '500',
+  },
+  schedulePanel: {
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 12,
+    padding: 14,
+    gap: 12,
+    marginTop: 12,
+  },
+  switchRowCompact: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  switchCopy: {
+    flex: 1,
+  },
+  switchTitle: {
+    color: colors.text,
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  switchDescription: {
+    color: colors.textMuted,
+    fontSize: 12,
+    lineHeight: 17,
+    marginTop: 2,
+  },
+  dayContainer: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 7,
+  },
+  dayButton: {
+    minWidth: 42,
+    minHeight: 42,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 21,
+    borderWidth: 1,
+    borderColor: colors.border,
   },
   dateButton: {
     backgroundColor: colors.surface,

@@ -24,7 +24,7 @@ Thumbs.db
 CLAUDE.md
 
 # Data and backup directories
-data/
+/data/
 dbs/
 logs/
 client-backup/

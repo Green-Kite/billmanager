@@ -1,12 +1,16 @@
 {
   "cli": {
     "version": ">= 16.28.0",
-    "appVersionSource": "remote"
+    "appVersionSource": "local"
   },
   "build": {
     "development": {
       "developmentClient": true,
       "distribution": "internal",
+      "channel": "development",
+      "env": {
+        "BILLMANAGER_DEVELOPMENT_BUILD": "true"
+      },
       "ios": {
         "simulator": true
       }
@@ -14,30 +18,40 @@
     "development:device": {
       "developmentClient": true,
       "distribution": "internal",
+      "channel": "development",
+      "env": {
+        "BILLMANAGER_DEVELOPMENT_BUILD": "true"
+      },
       "ios": {
         "simulator": false
       }
     },
     "preview": {
-      "distribution": "internal"
+      "distribution": "internal",
+      "channel": "preview",
+      "env": {
+        "BILLMANAGER_DEVELOPMENT_BUILD": "false"
+      }
     },
     "preview:ios": {
       "distribution": "internal",
+      "channel": "preview",
+      "env": {
+        "BILLMANAGER_DEVELOPMENT_BUILD": "false"
+      },
       "ios": {
         "simulator": false
       }
     },
     "production": {
-      "autoIncrement": true
+      "autoIncrement": true,
+      "channel": "production",
+      "env": {
+        "BILLMANAGER_DEVELOPMENT_BUILD": "false"
+      }
     }
   },
   "submit": {
-    "production": {
-      "ios": {
-        "appleId": "",
-        "ascAppId": "",
-        "appleTeamId": ""
-      }
-    }
+    "production": {}
   }
 }

@@ -1,6 +1,12 @@
 const { getDefaultConfig } = require('expo/metro-config');
-const { withNativeWind } = require('nativewind/metro');
 
 const config = getDefaultConfig(__dirname);
 
-module.exports = withNativeWind(config, { input: './global.css' });
+// expo-sqlite's web worker loads wa-sqlite as a WebAssembly asset. Keeping the
+// extension in Metro's asset pipeline makes the browser design preview and
+// offline-capability tests use the same encrypted repository implementation.
+if (!config.resolver.assetExts.includes('wasm')) {
+  config.resolver.assetExts.push('wasm');
+}
+
+module.exports = config;

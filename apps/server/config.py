@@ -8,6 +8,7 @@ Supports two modes:
 
 import os
 import logging
+import re
 from services.email_config import get_email_config
 
 logger = logging.getLogger(__name__)
@@ -221,6 +222,27 @@ def get_enabled_oauth_providers():
     return enabled
 
 
+def get_oauth_redirect_uris():
+    """Return exact OAuth callback URIs accepted by authorize and callback.
+
+    The current web callback and the official native app callback remain
+    available by default. Deployments can append universal links or alternate
+    development-client schemes with ``OAUTH_REDIRECT_URIS``.
+    """
+    app_url = os.environ.get("APP_URL", "http://localhost:5173").rstrip("/")
+    configured = [
+        value.strip()
+        for value in os.environ.get("OAUTH_REDIRECT_URIS", "").split(",")
+        if value.strip()
+    ]
+    candidates = [
+        f"{app_url}/auth/callback",
+        "billmanager://auth/callback",
+        *configured,
+    ]
+    return tuple(dict.fromkeys(candidates))
+
+
 # =============================================================================
 # Two-Factor Authentication Configuration
 # =============================================================================
@@ -252,10 +274,36 @@ DEFAULT_CURRENCY = os.environ.get("DEFAULT_CURRENCY", "USD").upper()
 # Default locale for formatting numbers/dates in the UI (BCP 47 tag)
 DEFAULT_LOCALE = os.environ.get("DEFAULT_LOCALE", "en-US")
 
+# Public mobile compatibility contract. Keep this independent from the API
+# version: it only changes when a mobile client must handle a breaking contract
+# change. An unset minimum version means that any client implementing the
+# advertised contract is accepted.
+SERVER_VERSION = os.environ.get("APP_VERSION", "4.3.2")
+MOBILE_CONTRACT_VERSION = 1
+MINIMUM_MOBILE_VERSION = os.environ.get("MINIMUM_MOBILE_VERSION") or None
+
 # WebAuthn Relying Party configuration
 WEBAUTHN_RP_ID = os.environ.get("WEBAUTHN_RP_ID", "localhost")
 WEBAUTHN_RP_NAME = os.environ.get("WEBAUTHN_RP_NAME", "BillManager")
 WEBAUTHN_ORIGIN = os.environ.get("WEBAUTHN_ORIGIN", "http://localhost:5173")
+
+
+def parse_webauthn_android_origins(value):
+    """Parse exact Credential Manager origins for trusted Android signing certs."""
+    origins = [origin.strip() for origin in (value or "").split(",") if origin.strip()]
+    pattern = re.compile(r"^android:apk-key-hash:[A-Za-z0-9_-]{43}=?$")
+    invalid = [origin for origin in origins if not pattern.fullmatch(origin)]
+    if invalid:
+        raise ValueError(
+            "WEBAUTHN_ANDROID_ORIGINS contains an invalid android:apk-key-hash origin"
+        )
+    return origins
+
+
+WEBAUTHN_ANDROID_ORIGINS = parse_webauthn_android_origins(
+    os.environ.get("WEBAUTHN_ANDROID_ORIGINS")
+)
+WEBAUTHN_EXPECTED_ORIGINS = [WEBAUTHN_ORIGIN, *WEBAUTHN_ANDROID_ORIGINS]
 
 
 def get_public_config():
@@ -279,6 +327,7 @@ def get_public_config():
         "passkeys_enabled": ENABLE_PASSKEYS,
         "default_currency": DEFAULT_CURRENCY,
         "default_locale": DEFAULT_LOCALE,
+        "mobile": get_mobile_capabilities(enabled_providers),
         "tier_limits": TIER_LIMITS if is_saas() else None,
         "pricing": {
             "basic": {
@@ -294,4 +343,36 @@ def get_public_config():
         }
         if is_saas()
         else None,
+    }
+
+
+def get_mobile_capabilities(enabled_providers=None):
+    """Return the pre-auth compatibility and feature envelope for mobile apps."""
+    if enabled_providers is None:
+        enabled_providers = get_enabled_oauth_providers()
+
+    return {
+        "mobile_contract_version": MOBILE_CONTRACT_VERSION,
+        "server_version": SERVER_VERSION,
+        "minimum_mobile_version": MINIMUM_MOBILE_VERSION,
+        "deployment_mode": DEPLOYMENT_MODE,
+        "default_currency": DEFAULT_CURRENCY,
+        "default_locale": DEFAULT_LOCALE,
+        "oauth_providers": list(enabled_providers),
+        "features": {
+            "registration": ENABLE_REGISTRATION,
+            "email": EMAIL_ENABLED,
+            "email_verification": REQUIRE_EMAIL_VERIFICATION,
+            "oauth": bool(enabled_providers),
+            "email_otp": ENABLE_2FA,
+            "passkeys": ENABLE_PASSKEYS,
+            "billing": ENABLE_BILLING,
+            "administration": True,
+            "sharing": True,
+            "settlements": True,
+            "telemetry": True,
+            "delta_sync": True,
+            "idempotent_mutations": True,
+            "optimistic_concurrency": True,
+        },
     }

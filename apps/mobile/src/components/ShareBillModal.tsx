@@ -14,6 +14,8 @@ import {
 import { useTheme } from '../context/ThemeContext';
 import { api } from '../api/client';
 import { Bill, BillShare, UserSearchResult } from '../types';
+import { useTranslation } from 'react-i18next';
+import { formatCurrency } from '../i18n/format';
 
 interface ShareBillModalProps {
   visible: boolean;
@@ -25,6 +27,7 @@ interface ShareBillModalProps {
 type SplitType = 'none' | 'percentage' | 'fixed' | 'equal';
 
 export default function ShareBillModal({ visible, onClose, bill, onShareCreated }: ShareBillModalProps) {
+  const { t } = useTranslation();
   const { colors } = useTheme();
   const [identifier, setIdentifier] = useState('');
   const [splitType, setSplitType] = useState<SplitType>('none');
@@ -87,14 +90,14 @@ export default function ShareBillModal({ visible, onClose, bill, onShareCreated 
 
   const handleShare = async () => {
     if (!identifier.trim()) {
-      Alert.alert('Error', isSaas ? 'Please enter an email or username' : 'Please enter a username');
+      Alert.alert(t('mobileParity.common.error'), t(isSaas ? 'shareBillModal.errorUsernameOrEmail' : 'shareBillModal.errorUsername'));
       return;
     }
 
     if (splitType === 'percentage') {
       const pct = parseFloat(splitValue);
       if (isNaN(pct) || pct <= 0 || pct > 100) {
-        Alert.alert('Error', 'Please enter a valid percentage (1-100)');
+        Alert.alert(t('mobileParity.common.error'), t('mobileParity.share.invalidPercentage'));
         return;
       }
     }
@@ -102,7 +105,7 @@ export default function ShareBillModal({ visible, onClose, bill, onShareCreated 
     if (splitType === 'fixed') {
       const fixed = parseFloat(splitValue);
       if (isNaN(fixed) || fixed <= 0) {
-        Alert.alert('Error', 'Please enter a valid fixed amount');
+        Alert.alert(t('mobileParity.common.error'), t('mobileParity.share.invalidFixed'));
         return;
       }
     }
@@ -116,32 +119,32 @@ export default function ShareBillModal({ visible, onClose, bill, onShareCreated 
     setIsLoading(false);
 
     if (result.success) {
-      Alert.alert('Success', result.data?.message || 'Bill shared successfully');
+      Alert.alert(t('mobileParity.common.success'), result.data?.message || t('mobileParity.share.success'));
       setIdentifier('');
       setSplitType('none');
       setSplitValue('');
       fetchExistingShares();
       onShareCreated?.();
     } else {
-      Alert.alert('Error', result.error || 'Failed to share bill');
+      Alert.alert(t('mobileParity.common.error'), result.error || t('shareBillModal.shareFailedDefault'));
     }
   };
 
   const handleRevokeShare = async (shareId: number) => {
     Alert.alert(
-      'Revoke Share',
-      'Are you sure you want to stop sharing this bill with this user?',
+      t('mobileParity.share.revokeTitle'),
+      t('mobileParity.share.revokeBody'),
       [
-        { text: 'Cancel', style: 'cancel' },
+        { text: t('mobileParity.common.cancel'), style: 'cancel' },
         {
-          text: 'Revoke',
+          text: t('mobileParity.collaboration.revoke'),
           style: 'destructive',
           onPress: async () => {
             const result = await api.revokeShare(shareId);
             if (result.success) {
               fetchExistingShares();
             } else {
-              Alert.alert('Error', result.error || 'Failed to revoke share');
+              Alert.alert(t('mobileParity.common.error'), result.error || t('shareBillModal.revokeFailedDefault'));
             }
           },
         },
@@ -163,16 +166,16 @@ export default function ShareBillModal({ visible, onClose, bill, onShareCreated 
   };
 
   const getSplitLabel = (type: string | null, value: number | null): string => {
-    if (!type) return 'Full amount';
+    if (!type) return t('mobileParity.share.fullAmount');
     switch (type) {
       case 'percentage':
         return `${value}%`;
       case 'fixed':
-        return `$${value?.toFixed(2)}`;
+        return formatCurrency(value ?? 0);
       case 'equal':
-        return '50/50';
+        return t('mobileParity.share.equal');
       default:
-        return 'Full amount';
+        return t('mobileParity.share.fullAmount');
     }
   };
 
@@ -200,9 +203,9 @@ export default function ShareBillModal({ visible, onClose, bill, onShareCreated 
       <View style={styles.container}>
         <View style={styles.header}>
           <TouchableOpacity onPress={handleClose} style={styles.closeButton}>
-            <Text style={styles.closeButtonText}>Cancel</Text>
+            <Text style={styles.closeButtonText}>{t('mobileParity.common.cancel')}</Text>
           </TouchableOpacity>
-          <Text style={styles.headerTitle}>Share Bill</Text>
+          <Text style={styles.headerTitle}>{t('shareBillModal.shareBillButton')}</Text>
           <View style={{ width: 60 }} />
         </View>
 
@@ -211,13 +214,13 @@ export default function ShareBillModal({ visible, onClose, bill, onShareCreated 
 
           <View style={styles.section}>
             <Text style={styles.label}>
-              {isSaas ? 'Username or Email' : 'Username'}
+              {isSaas ? t('mobileParity.share.usernameOrEmail') : t('shareBillModal.usernameLabel')}
             </Text>
             <TextInput
               style={styles.input}
               value={identifier}
               onChangeText={setIdentifier}
-              placeholder={isSaas ? 'Enter username or email' : 'Enter username'}
+              placeholder={isSaas ? t('mobileParity.share.usernameOrEmailPlaceholder') : t('mobileParity.share.usernamePlaceholder')}
               placeholderTextColor={colors.textMuted}
               autoCapitalize="none"
               autoCorrect={false}
@@ -246,7 +249,7 @@ export default function ShareBillModal({ visible, onClose, bill, onShareCreated 
           </View>
 
           <View style={styles.section}>
-            <Text style={styles.label}>Split Configuration (Optional)</Text>
+            <Text style={styles.label}>{t('mobileParity.share.splitOptional')}</Text>
             <View style={styles.splitOptions}>
               {(['none', 'equal', 'percentage', 'fixed'] as SplitType[]).map((type) => (
                 <TouchableOpacity
@@ -263,7 +266,7 @@ export default function ShareBillModal({ visible, onClose, bill, onShareCreated 
                       splitType === type && styles.splitOptionTextActive,
                     ]}
                   >
-                    {type === 'none' ? 'None' : type === 'equal' ? '50/50' : type === 'percentage' ? '%' : '$'}
+                    {type === 'none' ? t('mobileParity.share.none') : type === 'equal' ? t('mobileParity.share.equal') : type === 'percentage' ? '%' : formatCurrency(0).replace(/[\d\s.,\u00A0]/g, '') || '¤'}
                   </Text>
                 </TouchableOpacity>
               ))}
@@ -274,7 +277,7 @@ export default function ShareBillModal({ visible, onClose, bill, onShareCreated 
                 style={[styles.input, { marginTop: 12 }]}
                 value={splitValue}
                 onChangeText={setSplitValue}
-                placeholder={splitType === 'percentage' ? 'Enter percentage (e.g., 50)' : 'Enter amount'}
+                placeholder={splitType === 'percentage' ? t('mobileParity.share.percentagePlaceholder') : t('mobileParity.share.amountPlaceholder')}
                 placeholderTextColor={colors.textMuted}
                 keyboardType="decimal-pad"
               />
@@ -289,13 +292,13 @@ export default function ShareBillModal({ visible, onClose, bill, onShareCreated 
             {isLoading ? (
               <ActivityIndicator color="#fff" size="small" />
             ) : (
-              <Text style={styles.shareButtonText}>Share Bill</Text>
+              <Text style={styles.shareButtonText}>{t('shareBillModal.shareBillButton')}</Text>
             )}
           </TouchableOpacity>
 
           {existingShares.length > 0 && (
             <View style={styles.section}>
-              <Text style={styles.sectionTitle}>Currently Shared With</Text>
+              <Text style={styles.sectionTitle}>{t('shareBillModal.currentlySharedWith')}</Text>
               {existingShares.map((share) => (
                 <View key={share.id} style={styles.shareItem}>
                   <View style={styles.shareItemInfo}>
@@ -303,7 +306,7 @@ export default function ShareBillModal({ visible, onClose, bill, onShareCreated 
                     <View style={styles.shareItemMeta}>
                       <View style={[styles.statusBadge, { backgroundColor: getStatusColor(share.status) + '20' }]}>
                         <Text style={[styles.statusText, { color: getStatusColor(share.status) }]}>
-                          {share.status}
+                          {t(`shareBillModal.status.${share.status}`, { defaultValue: share.status })}
                         </Text>
                       </View>
                       <Text style={styles.shareItemSplit}>
@@ -316,7 +319,7 @@ export default function ShareBillModal({ visible, onClose, bill, onShareCreated 
                       style={styles.revokeButton}
                       onPress={() => handleRevokeShare(share.id)}
                     >
-                      <Text style={styles.revokeButtonText}>Revoke</Text>
+                      <Text style={styles.revokeButtonText}>{t('mobileParity.collaboration.revoke')}</Text>
                     </TouchableOpacity>
                   )}
                 </View>

@@ -1,8 +1,16 @@
+import type { components } from '../api/generated/schema';
+
+type GeneratedBill = components['schemas']['Bill'];
+export type BillFrequency = NonNullable<GeneratedBill['frequency']>;
+export type BillFrequencyType = NonNullable<GeneratedBill['frequency_type']>;
+
 // API Response types
 export interface ApiResponse<T> {
   success: boolean;
   data?: T;
   error?: string;
+  /** Transport status when a response reached the server. Absent for network failures. */
+  httpStatus?: number;
 }
 
 // Auth types
@@ -19,12 +27,14 @@ export interface User {
   email?: string;
   role: 'admin' | 'user';
   is_account_owner?: boolean;
+  has_password?: boolean;
 }
 
 export interface DatabaseInfo {
   id: number;
   name: string;
   display_name: string;
+  description?: string | null;
 }
 
 // Bill types
@@ -33,8 +43,8 @@ export interface Bill {
   name: string;
   amount: number | null;
   varies: boolean;
-  frequency: string;
-  frequency_type: string;
+  frequency: BillFrequency;
+  frequency_type: BillFrequencyType;
   frequency_config: string;
   next_due: string;
   auto_payment: boolean;
@@ -49,6 +59,7 @@ export interface Bill {
   last_updated?: string;
   avg_amount?: number;
   is_shared: boolean;
+  share_count?: number;
   share_info?: {
     share_id: number;
     owner_name: string;
@@ -241,4 +252,40 @@ export interface PendingShare {
 export interface UserSearchResult {
   id: number;
   username: string;
+}
+
+export interface SettlementLedgerItem {
+  share_id: number;
+  direction: 'owed_to_me' | 'i_owe';
+  bill_id: number;
+  bill_name: string;
+  counterparty_user_id: number | null;
+  counterparty_name: string;
+  amount: number;
+  due_date: string;
+  paid: boolean;
+  paid_date: string | null;
+  database_name?: string | null;
+}
+
+export interface SettlementPerson {
+  counterparty_name: string;
+  owed_to_me: number;
+  i_owe: number;
+  net: number;
+  open_count: number;
+}
+
+export interface SettlementsResponse {
+  summary: {
+    owed_to_me: number;
+    i_owe: number;
+    net_balance: number;
+    open_count: number;
+    settled_count: number;
+  };
+  owed_to_me: SettlementLedgerItem[];
+  i_owe: SettlementLedgerItem[];
+  settled: SettlementLedgerItem[];
+  people: SettlementPerson[];
 }

@@ -771,6 +771,146 @@ def migrate_20260608_02_add_bill_reminder_preferences(db):
         logger.info("Added bills.reminder_days column")
 
     db.session.commit()
+
+
+def migrate_20260715_01_create_client_mutations(db):
+    """Create the idempotent mobile mutation replay ledger."""
+    logger.info("Running migration: 20260715_01_create_client_mutations")
+
+    inspector = inspect(db.engine)
+    if 'client_mutations' not in inspector.get_table_names():
+        db.session.execute(text('''
+            CREATE TABLE client_mutations (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                database_id INTEGER NOT NULL REFERENCES databases(id) ON DELETE CASCADE,
+                client_mutation_id VARCHAR(36) NOT NULL,
+                operation VARCHAR(100) NOT NULL,
+                request_hash VARCHAR(64) NOT NULL,
+                response_status INTEGER NOT NULL,
+                response_body TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                CONSTRAINT uq_client_mutation_scope
+                    UNIQUE(user_id, database_id, client_mutation_id)
+            )
+        '''))
+        db.session.execute(text('''
+            CREATE INDEX idx_client_mutations_created_at
+            ON client_mutations(created_at)
+        '''))
+        logger.info("Created client_mutations table")
+
+    db.session.commit()
+
+
+def migrate_20260715_02_add_bill_share_updated_at(db):
+    """Add an optimistic concurrency timestamp to shared-bill records."""
+    logger.info("Running migration: 20260715_02_add_bill_share_updated_at")
+
+    inspector = inspect(db.engine)
+    columns = [col['name'] for col in inspector.get_columns('bill_shares')]
+    if 'updated_at' not in columns:
+        db.session.execute(text('''
+            ALTER TABLE bill_shares
+            ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        '''))
+        logger.info("Added bill_shares.updated_at column")
+
+    db.session.commit()
+
+
+def migrate_20260715_03_create_telemetry_settings(db):
+    """Create and conservatively backfill instance-wide telemetry consent."""
+    logger.info("Running migration: 20260715_03_create_telemetry_settings")
+
+    inspector = inspect(db.engine)
+    if 'telemetry_settings' not in inspector.get_table_names():
+        db.session.execute(text('''
+            CREATE TABLE telemetry_settings (
+                id INTEGER PRIMARY KEY,
+                state VARCHAR(20) NOT NULL DEFAULT 'pending',
+                decided_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                decided_at TIMESTAMP,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT ck_telemetry_settings_singleton CHECK (id = 1),
+                CONSTRAINT ck_telemetry_settings_state
+                    CHECK (state IN ('pending', 'enabled', 'disabled'))
+            )
+        '''))
+        logger.info("Created telemetry_settings table")
+
+    existing = db.session.execute(
+        text('SELECT id FROM telemetry_settings WHERE id = 1')
+    ).fetchone()
+    if not existing:
+        decision = db.session.execute(text('''
+            SELECT id, telemetry_notice_shown_at, telemetry_opt_out
+            FROM users
+            WHERE role = 'admin' AND created_by_id IS NULL
+            ORDER BY
+                CASE WHEN telemetry_opt_out IS TRUE THEN 0 ELSE 1 END,
+                telemetry_notice_shown_at DESC NULLS LAST,
+                id
+        ''')).fetchall()
+
+        disabled = next((row for row in decision if row[2] is True), None)
+        accepted = next(
+            (
+                row for row in decision
+                if row[1] is not None and row[2] is not True
+            ),
+            None,
+        )
+
+        if disabled:
+            state = 'disabled'
+            decided_by_user_id = disabled[0]
+            decided_at = disabled[1] or datetime.now(timezone.utc)
+        elif accepted:
+            state = 'enabled'
+            decided_by_user_id = accepted[0]
+            decided_at = accepted[1]
+        else:
+            state = 'pending'
+            decided_by_user_id = None
+            decided_at = None
+
+        db.session.execute(text('''
+            INSERT INTO telemetry_settings (
+                id, state, decided_by_user_id, decided_at, created_at, updated_at
+            ) VALUES (
+                1, :state, :decided_by_user_id, :decided_at,
+                CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+            )
+        '''), {
+            'state': state,
+            'decided_by_user_id': decided_by_user_id,
+            'decided_at': decided_at,
+        })
+        logger.info("Initialized instance telemetry consent as %s", state)
+
+    db.session.commit()
+
+
+def migrate_20260715_04_add_user_last_login_at(db):
+    """Add coarse successful-login tracking for aggregate telemetry."""
+    logger.info("Running migration: 20260715_04_add_user_last_login_at")
+
+    inspector = inspect(db.engine)
+    columns = [col['name'] for col in inspector.get_columns('users')]
+    if 'last_login_at' not in columns:
+        db.session.execute(text('''
+            ALTER TABLE users ADD COLUMN last_login_at TIMESTAMP
+        '''))
+        db.session.execute(text('''
+            CREATE INDEX idx_users_last_login_at ON users(last_login_at)
+        '''))
+        logger.info("Added users.last_login_at column and index")
+
+    db.session.commit()
+
+
 # List of all migrations in order
 # Format: (version, description, function)
 MIGRATIONS = [
@@ -798,6 +938,10 @@ MIGRATIONS = [
     ('20260226_01', 'Ensure share_audit_log performance indexes exist', migrate_20260226_01_ensure_share_audit_log_indexes),
     ('20260608_01', 'Create category budgets and ensure bill category fields', migrate_20260608_01_create_category_budgets),
     ('20260608_02', 'Add per-bill reminder preferences', migrate_20260608_02_add_bill_reminder_preferences),
+    ('20260715_01', 'Create idempotent client mutation replay ledger', migrate_20260715_01_create_client_mutations),
+    ('20260715_02', 'Add optimistic concurrency timestamp to bill shares', migrate_20260715_02_add_bill_share_updated_at),
+    ('20260715_03', 'Create instance-wide telemetry consent settings', migrate_20260715_03_create_telemetry_settings),
+    ('20260715_04', 'Add coarse user last-login tracking', migrate_20260715_04_add_user_last_login_at),
 ]
 
 

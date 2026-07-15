@@ -13,6 +13,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Search, X } from 'lucide-react-native';
 import { useTheme } from '../context/ThemeContext';
 import { BillIcon, availableIcons } from './BillIcon';
+import { useTranslation } from 'react-i18next';
 
 interface IconPickerProps {
   visible: boolean;
@@ -27,6 +28,7 @@ const GAP = 16;
 const COLS = Math.floor((width - 32) / (ICON_SIZE + GAP));
 
 export default function IconPicker({ visible, onClose, onSelect, currentIcon }: IconPickerProps) {
+  const { t } = useTranslation();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const [searchQuery, setSearchQuery] = useState('');
@@ -65,7 +67,7 @@ export default function IconPicker({ visible, onClose, onSelect, currentIcon }: 
     >
       <View style={styles.container}>
         <View style={styles.header}>
-          <Text style={styles.title}>Select Icon</Text>
+          <Text style={styles.title}>{t('iconPicker.title')}</Text>
           <TouchableOpacity onPress={onClose} style={styles.closeButton}>
             <X size={24} color={colors.text} />
           </TouchableOpacity>
@@ -75,7 +77,7 @@ export default function IconPicker({ visible, onClose, onSelect, currentIcon }: 
           <Search size={20} color={colors.textMuted} style={styles.searchIcon} />
           <TextInput
             style={styles.searchInput}
-            placeholder="Search icons..."
+            placeholder={t('iconPicker.searchPlaceholder')}
             placeholderTextColor={colors.textMuted}
             value={searchQuery}
             onChangeText={setSearchQuery}
