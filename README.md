@@ -6,15 +6,15 @@ A **secure multi-user** web application for tracking recurring expenses and inco
 
 ---
 
-## 🎉 What's New in v4.3.1
+## 🎉 What's New in v4.3.2
 
-**Unified Settings and Localization Fixes** - Account settings and administration now live on one full page, language selection uses the expected default currency, and bill-group administration is reliable again.
+**Security and Data Integrity Coverage** - Expanded regression coverage protects tenant boundaries and offline synchronization from cross-group writes and stale updates.
 
 ### Highlights
 
-- **Full-Page Settings** - Regular users can open Settings from the header, while admins also receive Users and Bill Groups tabs in the same workspace
-- **Language-Aware Currency** - Choosing English uses USD and choosing German uses EUR, including after a reload
-- **Reliable Bill-Group Administration** - The v2 database-access endpoint once again lists affected users before a bill group is deleted
+- **Tenant Mutation Protection** - Unauthorized bill moves, budget writes, and payment changes across bill groups are now covered by regression tests
+- **Safe Offline Sync** - Cross-group sync attempts are rejected and stale client updates cannot overwrite newer server data
+- **Reliable V2 Administration** - Bill-group access management now consistently lists affected users and preserves account-level access controls
 
 ---
 

@@ -2777,7 +2777,7 @@ def process_auto_payments():
 def get_version():
     return jsonify(
         {
-            "version": "4.3.1",
+            "version": "4.3.2",
             "license": "O'Saasy",
             "license_url": "https://osaasy.dev/",
             "features": [
@@ -8703,7 +8703,7 @@ def jwt_get_version():
         {
             "success": True,
             "data": {
-                "version": "4.3.1",
+                "version": "4.3.2",
                 "api_version": "v2",
                 "license": "O'Saasy",
                 "license_url": "https://osaasy.dev/",

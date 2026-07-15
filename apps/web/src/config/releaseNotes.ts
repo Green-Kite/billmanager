@@ -48,6 +48,31 @@ export interface ReleaseNote {
 
 export const releaseNotes: ReleaseNote[] = [
   {
+    version: '4.3.2',
+    date: '2026-07-15',
+    title: 'Security and Data Integrity Coverage',
+    sections: [
+      {
+        heading: 'Security',
+        items: [
+          'Added regression coverage that verifies bill moves, budget writes, and payment changes cannot cross bill-group boundaries',
+        ],
+      },
+      {
+        heading: 'Data Integrity',
+        items: [
+          'Offline sync now has regression coverage for rejecting cross-group mutations and preserving newer server data when a client is stale',
+        ],
+      },
+      {
+        heading: 'Bug Fixes',
+        items: [
+          'Restored parity in v2 bill-group administration, including access-listing before deletion and account-level access controls',
+        ],
+      },
+    ],
+  },
+  {
     version: '4.3.1',
     date: '2026-07-15',
     title: 'Unified Settings and Localization Fixes',
