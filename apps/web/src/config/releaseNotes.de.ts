@@ -2,6 +2,31 @@ import type { ReleaseNote } from './releaseNotes';
 
 export const germanReleaseNotes: ReleaseNote[] = [
   {
+    version: '4.3.2',
+    date: '2026-07-15',
+    title: 'Sicherheits- und Datenintegritätsabdeckung',
+    sections: [
+      {
+        heading: 'Sicherheit',
+        items: [
+          'Neue Regressionstests stellen sicher, dass Rechnungsverschiebungen, Budgetänderungen und Zahlungsänderungen keine Rechnungsgruppen-Grenzen überschreiten können',
+        ],
+      },
+      {
+        heading: 'Datenintegrität',
+        items: [
+          'Neue Regressionstests für die Offline-Synchronisierung weisen gruppenübergreifende Änderungen zurück und bewahren neuere Serverdaten bei veralteten Clients',
+        ],
+      },
+      {
+        heading: 'Fehlerbehebungen',
+        items: [
+          'Die v2-Verwaltung von Rechnungsgruppen wurde angeglichen, einschließlich der Zugriffsauflistung vor dem Löschen und Kontozugriffskontrollen',
+        ],
+      },
+    ],
+  },
+  {
     version: '4.3.1',
     date: '2026-07-15',
     title: 'Einheitliche Einstellungen und Lokalisierungsfehlerbehebungen',
