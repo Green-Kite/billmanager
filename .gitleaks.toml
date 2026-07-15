@@ -21,4 +21,5 @@ regexes = [
   '''billspass''',
   '''testsecret''',
   '''testpassword''',
+  '''Strongpass123''',
 ]
